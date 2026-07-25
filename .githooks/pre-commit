@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable with `just setup`.
+set -eu
+exec dprint check

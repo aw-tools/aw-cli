@@ -1,0 +1,200 @@
+#!/bin/sh
+# End-to-end test for `aw`.
+#
+# Builds a throwaway workspace against local bare repositories, bootstraps it
+# twice, and asserts that the second run is a no-op. Requires `garden` on PATH.
+set -eu
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+AW="$REPO/target/debug/aw"
+WORK="$REPO/tmp/e2e"
+FAILED=0
+
+pass() { printf 'ok    %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; FAILED=1; }
+
+assert() {
+	if [ "$2" = "$3" ]; then pass "$1"; else
+		fail "$1"
+		printf '      expected: %s\n      actual:   %s\n' "$3" "$2"
+	fi
+}
+
+[ -x "$AW" ] || { echo "build first: cargo build" >&2; exit 1; }
+
+rm -rf "$WORK"
+mkdir -p "$WORK/origins"
+
+# --- fixtures ----------------------------------------------------------------
+# Four member repositories. The shared skills repository is an ordinary member
+# that happens to contain only skills, so it needs no special manifest section.
+seed_skill() { # checkout, directory, description
+	mkdir -p "$1/$2"
+	printf -- '---\nname: %s\ndescription: %s\n---\n' \
+		"$(basename "$2")" "$3" >"$1/$2/SKILL.md"
+}
+
+for name in alpha beta gamma skills; do
+	git init -q --bare "$WORK/origins/$name.git"
+	git init -q "$WORK/seed-$name"
+	echo "$name" >"$WORK/seed-$name/file.txt"
+	case "$name" in
+	# alpha never opts in, so its skill must stay invisible.
+	alpha) seed_skill "$WORK/seed-$name" .claude/skills/private-alpha "Never opted in." ;;
+	# beta and gamma both expose `deploy`; only gamma prefixes, so both survive.
+	beta) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Beta deploy skill." ;;
+	gamma) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Gamma deploy skill." ;;
+	# A dedicated skills repository uses the public/private split.
+	skills) seed_skill "$WORK/seed-$name" public/release "Shared release skill." ;;
+	esac
+	git -C "$WORK/seed-$name" add -A
+	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm init
+	git -C "$WORK/seed-$name" push -q "$WORK/origins/$name.git" HEAD:main
+done
+
+# --- init --------------------------------------------------------------------
+"$AW" init "$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
+assert "init creates a manifest" "$([ -f "$WORK/demo.workspace/workspace.toml" ] && echo yes)" yes
+assert "init creates a git repository" \
+	"$([ -d "$WORK/demo.workspace/.git" ] && echo yes)" yes
+assert "init makes no commit" \
+	"$(git -C "$WORK/demo.workspace" rev-list --all --count)" 0
+assert "init records the workspace name" \
+	"$(grep -c '^name = "demo"' "$WORK/demo.workspace/workspace.toml")" 1
+assert "CLAUDE.md is a symlink to AGENTS.md" \
+	"$(readlink "$WORK/demo.workspace/CLAUDE.md")" AGENTS.md
+
+# --- manifest ----------------------------------------------------------------
+cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
+
+[identity]
+name = "Test User"
+email = "test@example.com"
+
+[[repo]]
+path = "alpha"
+url = "$WORK/origins/alpha.git"
+branch = "main"
+
+[[repo]]
+path = "beta"
+url = "$WORK/origins/beta.git"
+skills = true
+
+[[repo]]
+path = "gamma"
+url = "$WORK/origins/gamma.git"
+skills = true
+skill-prefix = true
+
+[[repo]]
+path = "skills"
+url = "$WORK/origins/skills.git"
+skills = ["release"]
+EOF
+
+# A workspace-local skill that collides with the shared repository's name.
+mkdir -p "$WORK/demo.workspace/.skills/release"
+cat >"$WORK/demo.workspace/.skills/release/SKILL.md" <<'EOF'
+---
+name: release
+description: Workspace-local release skill; must win over the shared one.
+---
+EOF
+
+# --- bootstrap (first run) ---------------------------------------------------
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot1.log" 2>&1 ||
+	{ cat "$WORK/boot1.log"; exit 1; }
+
+for name in alpha beta gamma skills; do
+	assert "$name cloned" "$([ -d "$WORK/demo.workspace/$name/.git" ] && echo yes)" yes
+done
+assert "identity applied to member repo" \
+	"$(git -C "$WORK/demo.workspace/alpha" config --local user.email)" test@example.com
+assert "identity applied to workspace repo" \
+	"$(git -C "$WORK/demo.workspace" config --local user.email)" test@example.com
+assert "branch honoured" \
+	"$(git -C "$WORK/demo.workspace/alpha" rev-parse --abbrev-ref HEAD)" main
+
+for dir in .claude/skills .agents/skills; do
+	assert "link resolves in $dir" \
+		"$(cat "$WORK/demo.workspace/$dir/release/SKILL.md" | grep -c 'must win')" 1
+	assert "link in $dir is relative" \
+		"$(readlink "$WORK/demo.workspace/$dir/release" | cut -c1-2)" ..
+done
+assert "shared skill is shadowed, not linked twice" \
+	"$(grep -c 'shadowed  release' "$WORK/boot1.log")" 1
+assert "member repo skill keeps its own name by default" \
+	"$(grep -c 'Beta deploy skill' "$WORK/demo.workspace/.claude/skills/deploy/SKILL.md")" 1
+assert "skill-prefix namespaces the repo that asks for it" \
+	"$(grep -c 'Gamma deploy skill' "$WORK/demo.workspace/.claude/skills/gamma--deploy/SKILL.md")" 1
+assert "opted-out repo contributes nothing" \
+	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'private-alpha')" 0
+
+# --- the deny-all invariant --------------------------------------------------
+echo 'TOKEN=secret' >"$WORK/demo.workspace/leak.env"
+assert "inner repos and secrets stay invisible" \
+	"$(git -C "$WORK/demo.workspace" status --porcelain |
+		grep -cE '^.. (alpha|beta|gamma|skills)/|leak\.env')" 0
+git -C "$WORK/demo.workspace" add -A
+assert "no gitlink is ever created" \
+	"$(git -C "$WORK/demo.workspace" ls-files -s | grep -c 160000)" 0
+git -C "$WORK/demo.workspace" reset -q
+
+# --- bootstrap (second run must be a no-op) ----------------------------------
+BEFORE="$(cd "$WORK/demo.workspace" && find . -path ./.git -prune -o -print | sort |
+	while read -r p; do printf '%s %s\n' "$p" "$(git hash-object "$p" 2>/dev/null || echo dir)"; done)"
+HEAD_BEFORE="$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)"
+
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot2.log" 2>&1
+
+AFTER="$(cd "$WORK/demo.workspace" && find . -path ./.git -prune -o -print | sort |
+	while read -r p; do printf '%s %s\n' "$p" "$(git hash-object "$p" 2>/dev/null || echo dir)"; done)"
+
+assert "second bootstrap changes nothing on disk" "$(
+	[ "$BEFORE" = "$AFTER" ] && echo same
+)" same
+assert "second bootstrap regenerates nothing" \
+	"$(grep -c 'trees     unchanged' "$WORK/boot2.log")" 1
+assert "second bootstrap relinks nothing" \
+	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 2
+assert "second bootstrap moves no HEAD" \
+	"$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)" "$HEAD_BEFORE"
+
+# --- containment: a workspace manages nothing outside itself -----------------
+"$AW" init "$WORK/escape.workspace" --name escape >/dev/null 2>&1
+cat >>"$WORK/escape.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "../outside"
+url = "$WORK/origins/alpha.git"
+EOF
+if "$AW" bootstrap "$WORK/escape.workspace" >"$WORK/escape.log" 2>&1; then
+	ESCAPE=allowed
+else
+	ESCAPE=rejected
+fi
+assert "a path escaping the workspace is rejected" "$ESCAPE" rejected
+assert "the rejection names the cause" \
+	"$(grep -c 'escapes the workspace' "$WORK/escape.log")" 1
+assert "nothing was cloned outside the workspace" \
+	"$([ -e "$WORK/outside" ] && echo yes || echo no)" no
+
+# --- doctor ------------------------------------------------------------------
+"$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor.log" 2>&1 ||
+	{ cat "$WORK/doctor.log"; fail "doctor exits non-zero on a healthy workspace"; }
+assert "doctor reports no failures" "$(grep -c '^FAIL' "$WORK/doctor.log")" 0
+
+ln -s ../../nowhere "$WORK/demo.workspace/.claude/skills/broken"
+"$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor2.log" 2>&1 || true
+assert "doctor catches a dangling link" \
+	"$(grep -c 'FAIL  skill links' "$WORK/doctor2.log")" 1
+
+if [ "$FAILED" -eq 0 ]; then
+	echo
+	echo "e2e: all assertions passed"
+else
+	echo
+	echo "e2e: FAILURES"
+fi
+exit "$FAILED"
