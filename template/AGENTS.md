@@ -1,7 +1,7 @@
 # Workspace instructions
 
-This is an agentic workspace: the root is a git repository tracking only the workspace layer. Inner
-repositories are separate checkouts, invisible to it.
+This is an agentic workspace: the root is a git repository tracking only the
+workspace layer. Inner repositories are separate checkouts, invisible to it.
 
 ## Layout
 
@@ -19,8 +19,8 @@ repositories are separate checkouts, invisible to it.
 ## Rules
 
 - Never commit inner-repo work from the workspace repo; commit inside the repo.
-- `aw sync` (planned) will fetch and report. It never merges, pulls, or touches a working tree — do
-  the same by hand until it lands.
+- `aw sync` (planned) will fetch and report. It never merges, pulls, or touches
+  a working tree — do the same by hand until it lands.
 - Secrets never enter `context/` or any tracked file.
 - Throwaway files go in `tmp/`.
 

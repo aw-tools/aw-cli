@@ -1,13 +1,14 @@
 # context/
 
-Working context for this workspace: who is involved, the constraints the work operates under,
-playbooks, decision precedents, and notes worth keeping between sessions. Agents read this; humans
-maintain it.
+Working context for this workspace: who is involved, the constraints the work
+operates under, playbooks, decision precedents, and notes worth keeping between
+sessions. Agents read this; humans maintain it.
 
-**This directory is version-controlled.** Everything committed here reaches the workspace remote, so
-its confidentiality is the remote's confidentiality — set that expectation deliberately before
-writing anything sensitive. A workspace pointed at a private remote can hold private material; one
-pointed anywhere public cannot.
+**This directory is version-controlled.** Everything committed here reaches the
+workspace remote, so its confidentiality is the remote's confidentiality — set
+that expectation deliberately before writing anything sensitive. A workspace
+pointed at a private remote can hold private material; one pointed anywhere
+public cannot.
 
 ## What does not belong here
 
