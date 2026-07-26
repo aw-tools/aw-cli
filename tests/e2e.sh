@@ -35,8 +35,8 @@ seed_skill() { # checkout, directory, description
 }
 
 for name in alpha beta gamma skills; do
-	git init -q --bare "$WORK/origins/$name.git"
-	git init -q "$WORK/seed-$name"
+	git init -q --bare --initial-branch=main "$WORK/origins/$name.git"
+	git init -q --initial-branch=main "$WORK/seed-$name"
 	echo "$name" >"$WORK/seed-$name/file.txt"
 	case "$name" in
 	# alpha never opts in, so its skill must stay invisible.
