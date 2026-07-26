@@ -1,10 +1,8 @@
 //! Workspace template materialisation.
 //!
-//! `aw init` clones the selected template at runtime. The previously vendored
-//! path remains temporarily so every migration head stays buildable.
+//! `aw init` clones the selected template at runtime.
 
 use anyhow::{Context, Result};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,77 +10,6 @@ use crate::git;
 
 pub const DEFAULT_URL: &str = "git@github.com:attila/workspace.template.git";
 pub const DEFAULT_REF: &str = "v0.1.0";
-
-/// `.gitignore` is stored without its leading dot: a real dotfile here would
-/// apply to this repository's own `template/` subtree and untrack it.
-#[allow(dead_code)] // AW1a keeps the baked path alive; AW1b removes it.
-const FILES: &[(&str, &str, u32)] = &[
-    (".gitignore", include_str!("../template/gitignore"), 0o644),
-    (
-        "workspace.toml",
-        include_str!("../template/workspace.toml"),
-        0o644,
-    ),
-    (
-        "garden.yaml",
-        include_str!("../template/garden.yaml"),
-        0o644,
-    ),
-    ("AGENTS.md", include_str!("../template/AGENTS.md"), 0o644),
-    ("README.md", include_str!("../template/README.md"), 0o644),
-    (
-        "context/README.md",
-        include_str!("../template/context/README.md"),
-        0o644,
-    ),
-    (
-        "bin/bootstrap",
-        include_str!("../template/bin/bootstrap"),
-        0o755,
-    ),
-    ("tmp/.keep", "", 0o644),
-];
-
-/// Harness-specific aliases for a file the template already provides, as
-/// `(link, target)`. Never replaced if something is already at the link path.
-#[allow(dead_code)] // AW1a keeps the baked path alive; AW1b removes it.
-const SYMLINKS: &[(&str, &str)] = &[("CLAUDE.md", "AGENTS.md")];
-
-/// Materialise the template into `root`, skipping anything already present.
-///
-/// Returns the paths actually created, so `aw init` can report honestly when
-/// re-run over an existing directory.
-#[allow(dead_code)] // Exercised below; retained only for AW1a coexistence.
-pub fn instantiate(root: &Path) -> Result<Vec<String>> {
-    let mut created = Vec::new();
-
-    for (relative, contents, mode) in FILES {
-        let path = root.join(relative);
-        if path.exists() {
-            continue;
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(*mode))
-            .with_context(|| format!("setting mode on {}", path.display()))?;
-        created.push((*relative).to_owned());
-    }
-
-    for (link, target) in SYMLINKS {
-        let path = root.join(link);
-        if path.exists() || path.is_symlink() {
-            continue;
-        }
-        std::os::unix::fs::symlink(target, &path)
-            .with_context(|| format!("linking {}", path.display()))?;
-        created.push((*link).to_owned());
-    }
-
-    Ok(created)
-}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Source {
@@ -427,19 +354,6 @@ mod tests {
                 url: "https://example.com/org/template.git".to_owned(),
                 reference: Some("v1".to_owned()),
             }
-        );
-    }
-
-    #[test]
-    fn baked_instantiation_remains_operational_during_coexistence() {
-        let temporary = TemporaryDirectory::new().expect("temporary directory");
-        let created = instantiate(temporary.path()).expect("baked template materialises");
-
-        assert!(created.iter().any(|path| path == "workspace.toml"));
-        assert!(temporary.path().join(".gitignore").is_file());
-        assert_eq!(
-            std::fs::read_link(temporary.path().join("CLAUDE.md")).expect("symlink exists"),
-            Path::new("AGENTS.md")
         );
     }
 
