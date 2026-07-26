@@ -24,6 +24,9 @@ deny:
 doc:
     cargo doc --no-deps
 
+install:
+    cargo install --path .
+
 ci: fmt clippy test doc deny e2e
 
 setup:
