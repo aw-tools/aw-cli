@@ -2,10 +2,11 @@
 
 Seed for a multi-repo agentic workspace.
 
-A workspace is a git repository that tracks only its own thin layer — the manifest, agent
-instructions, and working context. The inner repositories checked out inside it stay entirely
-separate: the workspace `.gitignore` denies everything by default, so git never descends into them
-and no gitlink is ever created. Clone the workspace anywhere, run one command, and the whole
+A workspace is a git repository that tracks only its own thin layer — the
+manifest, agent instructions, and working context. The inner repositories
+checked out inside it stay entirely separate: the workspace `.gitignore` denies
+everything by default, so git never descends into them and no gitlink is ever
+created. Clone the workspace anywhere, run one command, and the whole
 constellation reassembles.
 
 ## Provisioning ritual
@@ -16,8 +17,9 @@ $EDITOR workspace.toml         # declare inner repos and skill opt-ins
 bin/bootstrap                  # clone repos, apply config, link skills, report
 ```
 
-The first commit is deliberately yours to make: review `git status --porcelain` and `git ls-files`
-before it, because everything tracked here reaches the workspace remote.
+The first commit is deliberately yours to make: review `git status --porcelain`
+and `git ls-files` before it, because everything tracked here reaches the
+workspace remote.
 
 ## Day to day
 
