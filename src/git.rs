@@ -140,13 +140,14 @@ pub fn resolve_commit(dir: &Path, reference: Option<&str>) -> Result<String> {
             .with_context(|| format!("resolving template ref {reference:?}"));
     }
 
-    if (4..=64).contains(&reference.len())
+    let is_hex_object_id = (4..=64).contains(&reference.len())
         && reference
             .chars()
-            .all(|character| character.is_ascii_hexdigit())
-        && let Ok(sha) = rev_parse_commit(dir, reference)
-    {
-        return Ok(sha);
+            .all(|character| character.is_ascii_hexdigit());
+    if is_hex_object_id {
+        if let Ok(sha) = rev_parse_commit(dir, reference) {
+            return Ok(sha);
+        }
     }
 
     let tag = format!("refs/tags/{reference}");

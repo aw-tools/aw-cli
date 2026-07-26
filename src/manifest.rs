@@ -164,14 +164,14 @@ pub fn replace_workspace_name(text: &str, name: &str) -> Result<String> {
             in_workspace = false;
         } else if in_workspace {
             let content = line.trim_start();
-            if let Some(rest) = content.strip_prefix(&target)
-                && (rest.trim().is_empty() || rest.trim_start().starts_with('#'))
-            {
-                let start = offset + line.len() - content.len();
-                let end = start + target.len();
-                let mut updated = text.to_owned();
-                updated.replace_range(start..end, &format!("name = \"{name}\""));
-                return Ok(updated);
+            if let Some(rest) = content.strip_prefix(&target) {
+                if rest.trim().is_empty() || rest.trim_start().starts_with('#') {
+                    let start = offset + line.len() - content.len();
+                    let end = start + target.len();
+                    let mut updated = text.to_owned();
+                    updated.replace_range(start..end, &format!("name = \"{name}\""));
+                    return Ok(updated);
+                }
             }
         }
         offset += line.len();
