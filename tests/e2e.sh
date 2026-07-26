@@ -26,6 +26,75 @@ rm -rf "$WORK"
 mkdir -p "$WORK/origins"
 
 # --- fixtures ----------------------------------------------------------------
+# A clonable workspace template exercises init without network access. The
+# working tree and its bare clone are both used below.
+git init -q --initial-branch=main "$WORK/seed-template"
+mkdir -p "$WORK/seed-template/.github/workflows" "$WORK/seed-template/bin"
+cat >"$WORK/seed-template/.gitignore" <<'EOF'
+*
+!.gitignore
+!workspace.toml
+!garden.yaml
+!README.md
+!.editorconfig
+!conflicting-source.txt
+!.seedignore
+!CONTRACT.md
+!.github/
+!.github/**
+!bin/
+!bin/**
+EOF
+cat >"$WORK/seed-template/workspace.toml" <<'EOF'
+[identity]
+name = "Template User"
+email = "template@example.com"
+
+[workspace]
+name = "CHANGEME"
+EOF
+cat >"$WORK/seed-template/garden.yaml" <<'EOF'
+garden:
+  includes:
+    - .aw/trees.yaml
+EOF
+echo 'template readme' >"$WORK/seed-template/README.md"
+echo 'root = true' >"$WORK/seed-template/.editorconfig"
+echo '#!/bin/sh' >"$WORK/seed-template/bin/bootstrap"
+chmod +x "$WORK/seed-template/bin/bootstrap"
+echo 'name: template-ci' >"$WORK/seed-template/.github/workflows/ci.yml"
+echo 'template contract' >"$WORK/seed-template/CONTRACT.md"
+cat >"$WORK/seed-template/.seedignore" <<'EOF'
+.github/
+CONTRACT.md
+.seedignore
+EOF
+git -C "$WORK/seed-template" add -A
+git -C "$WORK/seed-template" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$WORK/seed-template" tag fixture-v1
+git -C "$WORK/seed-template" tag release
+git -C "$WORK/seed-template" switch -qc release
+echo 'branch release' >"$WORK/seed-template/branch-release.txt"
+git -C "$WORK/seed-template" add -f branch-release.txt
+git -C "$WORK/seed-template" -c user.name=t -c user.email=t@t \
+	commit -qm 'branch release'
+RELEASE_SHA="$(git -C "$WORK/seed-template" rev-parse HEAD)"
+git -C "$WORK/seed-template" switch -q main
+git clone -q --bare "$WORK/seed-template" "$WORK/origins/template.git"
+TEMPLATE_SHA="$(git -C "$WORK/seed-template" rev-parse fixture-v1^{commit})"
+git clone -q "$WORK/seed-template" "$WORK/seed-conflicting-template"
+echo 'must never reach the target' >"$WORK/seed-conflicting-template/conflicting-source.txt"
+git -C "$WORK/seed-conflicting-template" add conflicting-source.txt
+git -C "$WORK/seed-conflicting-template" -c user.name=t -c user.email=t@t \
+	commit -qm 'conflicting source'
+git clone -q --bare "$WORK/seed-conflicting-template" "$WORK/origins/conflicting-template.git"
+git clone -q "$WORK/seed-template" "$WORK/seed-invalid-template"
+printf '[workspace\n' >"$WORK/seed-invalid-template/workspace.toml"
+git -C "$WORK/seed-invalid-template" add workspace.toml
+git -C "$WORK/seed-invalid-template" -c user.name=t -c user.email=t@t \
+	commit -qm 'invalid manifest'
+git clone -q --bare "$WORK/seed-invalid-template" "$WORK/origins/invalid-template.git"
+
 # Four member repositories. The shared skills repository is an ordinary member
 # that happens to contain only skills, so it needs no special manifest section.
 seed_skill() { # checkout, directory, description
@@ -53,23 +122,134 @@ for name in alpha beta gamma skills; do
 done
 
 # --- init --------------------------------------------------------------------
-"$AW" init "$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
+mkdir -p "$WORK/demo.workspace"
+echo 'keep this readme' >"$WORK/demo.workspace/README.md"
+"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
+	"$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
 assert "init creates a manifest" "$([ -f "$WORK/demo.workspace/workspace.toml" ] && echo yes)" yes
 assert "init creates a git repository" \
 	"$([ -d "$WORK/demo.workspace/.git" ] && echo yes)" yes
+assert "init detaches the template repository" \
+	"$(git -C "$WORK/demo.workspace" remote | wc -l | tr -d ' ')" 0
 assert "init makes no commit" \
 	"$(git -C "$WORK/demo.workspace" rev-list --all --count)" 0
+assert "init uses trunk as the initial branch" \
+	"$(git -C "$WORK/demo.workspace" symbolic-ref --short HEAD)" trunk
 assert "init records the workspace name" \
 	"$(grep -c '^name = "demo"' "$WORK/demo.workspace/workspace.toml")" 1
-assert "CLAUDE.md is a symlink to AGENTS.md" \
-	"$(readlink "$WORK/demo.workspace/CLAUDE.md")" AGENTS.md
+assert "init records the template URL" \
+	"$(grep -c "^url = \"$WORK/origins/template.git\"$" "$WORK/demo.workspace/workspace.toml")" 1
+assert "init records the typed template ref" \
+	"$(grep -c '^ref = "fixture-v1"$' "$WORK/demo.workspace/workspace.toml")" 1
+assert "init records the resolved template SHA" \
+	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/demo.workspace/workspace.toml")" 1
+assert "init applies template identity" \
+	"$(git -C "$WORK/demo.workspace" config --local user.email)" template@example.com
+assert "init preserves files already present" \
+	"$(cat "$WORK/demo.workspace/README.md")" 'keep this readme'
+assert "init honours seedignore directory patterns" \
+	"$([ -e "$WORK/demo.workspace/.github" ] && echo present || echo absent)" absent
+assert "init honours seedignore file patterns" \
+	"$([ -e "$WORK/demo.workspace/CONTRACT.md" ] && echo present || echo absent)" absent
+assert "init removes seedignore itself" \
+	"$([ -e "$WORK/demo.workspace/.seedignore" ] && echo present || echo absent)" absent
+assert "init propagates formatting configuration" \
+	"$([ -f "$WORK/demo.workspace/.editorconfig" ] && echo yes)" yes
+assert "init preserves executable modes" \
+	"$([ -x "$WORK/demo.workspace/bin/bootstrap" ] && echo yes)" yes
+
+cp -a "$WORK/demo.workspace" "$WORK/demo-before-reinit"
+"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
+	"$WORK/demo.workspace" --name demo >"$WORK/reinit.log" 2>&1
+assert "same-source re-init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/demo-before-reinit" "$WORK/demo.workspace")" ""
+
+if "$AW" init --template "$WORK/origins/conflicting-template.git@main" \
+	"$WORK/demo.workspace" --name demo >"$WORK/conflicting-init.log" 2>&1; then
+	fail "conflicting-source re-init fails"
+else
+	pass "conflicting-source re-init fails"
+fi
+assert "conflicting-source file does not reach the target" \
+	"$([ -e "$WORK/demo.workspace/conflicting-source.txt" ] && echo present || echo absent)" absent
+assert "conflicting-source re-init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/demo-before-reinit" "$WORK/demo.workspace")" ""
+
+mkdir -p "$WORK/invalid.workspace"
+echo 'keep this marker' >"$WORK/invalid.workspace/marker.txt"
+cp -a "$WORK/invalid.workspace" "$WORK/invalid-before-init"
+if "$AW" init --template "$WORK/origins/invalid-template.git@main" \
+	"$WORK/invalid.workspace" --name invalid >"$WORK/invalid-init.log" 2>&1; then
+	fail "invalid-manifest init fails"
+else
+	pass "invalid-manifest init fails"
+fi
+assert "invalid-manifest init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/invalid-before-init" "$WORK/invalid.workspace")" ""
+
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
+assert "init accepts a local working-tree template" \
+	"$([ -f "$WORK/working-tree.workspace/workspace.toml" ] && echo yes)" yes
+assert "working-tree init is detached" \
+	"$(git -C "$WORK/working-tree.workspace" remote | wc -l | tr -d ' ')" 0
+assert "working-tree init records an empty typed ref" \
+	"$(grep -c '^ref = ""$' "$WORK/working-tree.workspace/workspace.toml")" 1
+
+"$AW" init --template "$WORK/origins/template.git@main" \
+	"$WORK/branch.workspace" --name branch >"$WORK/init-branch.log" 2>&1
+assert "init resolves a branch ref" \
+	"$(grep -c '^ref = "main"$' "$WORK/branch.workspace/workspace.toml")" 1
+assert "branch ref records its resolved SHA" \
+	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/branch.workspace/workspace.toml")" 1
+
+"$AW" init --template "$WORK/origins/template.git@$TEMPLATE_SHA" \
+	"$WORK/sha.workspace" --name sha >"$WORK/init-sha.log" 2>&1
+assert "init resolves a SHA ref" \
+	"$(grep -c "^ref = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
+assert "SHA ref records its resolved SHA" \
+	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
+
+if "$AW" init --template "$WORK/origins/template.git@release" \
+	"$WORK/ambiguous.workspace" --name ambiguous >"$WORK/init-ambiguous.log" 2>&1; then
+	fail "ambiguous tag and branch ref is rejected"
+else
+	pass "ambiguous tag and branch ref is rejected"
+fi
+
+"$AW" init --template "$WORK/origins/template.git@refs/tags/release" \
+	"$WORK/qualified-tag.workspace" --name qualified-tag \
+	>"$WORK/init-qualified-tag.log" 2>&1
+assert "qualified tag ref selects the tag commit" \
+	"$([ -e "$WORK/qualified-tag.workspace/branch-release.txt" ] && echo branch || echo tag)" tag
+assert "qualified tag records its resolved SHA" \
+	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" \
+		"$WORK/qualified-tag.workspace/workspace.toml")" 1
+
+"$AW" init --template "$WORK/origins/template.git@refs/heads/release" \
+	"$WORK/qualified-branch.workspace" --name qualified \
+	>"$WORK/init-qualified-branch.log" 2>&1
+assert "qualified branch ref fetches the requested commit" \
+	"$(cat "$WORK/qualified-branch.workspace/branch-release.txt")" 'branch release'
+assert "qualified branch records its resolved SHA" \
+	"$(grep -c "^sha = \"$RELEASE_SHA\"$" \
+		"$WORK/qualified-branch.workspace/workspace.toml")" 1
+
+mkdir -p "$WORK/missing-ref.workspace"
+echo 'keep this marker' >"$WORK/missing-ref.workspace/marker.txt"
+cp -a "$WORK/missing-ref.workspace" "$WORK/missing-ref-before-init"
+if "$AW" init --template "$WORK/origins/template.git@does-not-exist" \
+	"$WORK/missing-ref.workspace" --name missing \
+	>"$WORK/init-missing-ref.log" 2>&1; then
+	fail "missing ref is rejected"
+else
+	pass "missing ref is rejected"
+fi
+assert "missing-ref init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/missing-ref-before-init" "$WORK/missing-ref.workspace")" ""
 
 # --- manifest ----------------------------------------------------------------
 cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
-
-[identity]
-name = "Test User"
-email = "test@example.com"
 
 [[repo]]
 path = "alpha"
@@ -110,9 +290,9 @@ for name in alpha beta gamma skills; do
 	assert "$name cloned" "$([ -d "$WORK/demo.workspace/$name/.git" ] && echo yes)" yes
 done
 assert "identity applied to member repo" \
-	"$(git -C "$WORK/demo.workspace/alpha" config --local user.email)" test@example.com
+	"$(git -C "$WORK/demo.workspace/alpha" config --local user.email)" template@example.com
 assert "identity applied to workspace repo" \
-	"$(git -C "$WORK/demo.workspace" config --local user.email)" test@example.com
+	"$(git -C "$WORK/demo.workspace" config --local user.email)" template@example.com
 assert "branch honoured" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse --abbrev-ref HEAD)" main
 
@@ -162,7 +342,8 @@ assert "second bootstrap moves no HEAD" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)" "$HEAD_BEFORE"
 
 # --- containment: a workspace manages nothing outside itself -----------------
-"$AW" init "$WORK/escape.workspace" --name escape >/dev/null 2>&1
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/escape.workspace" --name escape >/dev/null 2>&1
 cat >>"$WORK/escape.workspace/workspace.toml" <<EOF
 
 [[repo]]

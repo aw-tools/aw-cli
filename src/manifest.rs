@@ -9,9 +9,12 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub const FILENAME: &str = "workspace.toml";
+pub const WORKSPACE_NAME_PLACEHOLDER: &str = "CHANGEME";
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
+    #[serde(default)]
+    pub template: Option<Template>,
     pub workspace: Workspace,
     #[serde(default)]
     pub identity: Option<Identity>,
@@ -22,6 +25,14 @@ pub struct Manifest {
 #[derive(Debug, Deserialize)]
 pub struct Workspace {
     pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Template {
+    pub url: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub sha: String,
 }
 
 /// Repository-local git identity, applied to every managed repository.
@@ -131,6 +142,115 @@ impl Manifest {
     }
 }
 
+/// Replace the template placeholder only in the `[workspace]` table.
+///
+/// Templates are hand-authored and retain comments and ordering, so this
+/// transform deliberately edits the one contract line instead of
+/// reserialising the whole manifest.
+pub fn replace_workspace_name(text: &str, name: &str) -> Result<String> {
+    let target = format!("name = \"{WORKSPACE_NAME_PLACEHOLDER}\"");
+    let mut in_workspace = false;
+    let mut offset = 0;
+
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == "[workspace]"
+            || trimmed
+                .strip_prefix("[workspace]")
+                .is_some_and(|rest| rest.trim_start().starts_with('#'))
+        {
+            in_workspace = true;
+        } else if trimmed.starts_with('[') {
+            in_workspace = false;
+        } else if in_workspace {
+            let content = line.trim_start();
+            if let Some(rest) = content.strip_prefix(&target) {
+                if rest.trim().is_empty() || rest.trim_start().starts_with('#') {
+                    let start = offset + line.len() - content.len();
+                    let end = start + target.len();
+                    let mut updated = text.to_owned();
+                    updated.replace_range(start..end, &format!("name = \"{name}\""));
+                    return Ok(updated);
+                }
+            }
+        }
+        offset += line.len();
+    }
+
+    anyhow::bail!(
+        "template contract violation: [workspace] must contain name = \"{WORKSPACE_NAME_PLACEHOLDER}\""
+    )
+}
+
+/// Reject a re-init whose resolved source conflicts with recorded provenance.
+/// A target without a manifest or provenance is still eligible for its first
+/// template overlay.
+pub fn validate_template(root: &Path, url: &str, reference: &str, sha: &str) -> Result<()> {
+    let path = root.join(FILENAME);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let parsed: Manifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
+    parsed
+        .validate()
+        .with_context(|| format!("in manifest {}", path.display()))?;
+
+    if let Some(existing) = parsed.template.as_ref() {
+        anyhow::ensure!(
+            existing.url == url && existing.reference == reference && existing.sha == sha,
+            "workspace already records template {}@{} ({})",
+            existing.url,
+            existing.reference,
+            existing.sha
+        );
+    }
+    Ok(())
+}
+
+/// Add immutable template provenance without reserialising the human-edited
+/// manifest. A repeat init from the same source is a no-op; a conflicting
+/// source is rejected rather than rewriting history.
+pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Result<Manifest> {
+    let path = root.join(FILENAME);
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut parsed: Manifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
+    parsed
+        .validate()
+        .with_context(|| format!("in manifest {}", path.display()))?;
+
+    if let Some(existing) = parsed.template.as_ref() {
+        anyhow::ensure!(
+            existing.url == url && existing.reference == reference && existing.sha == sha,
+            "workspace already records template {}@{} ({})",
+            existing.url,
+            existing.reference,
+            existing.sha
+        );
+        return Ok(parsed);
+    }
+
+    let quote = |value: &str| toml::Value::String(value.to_owned()).to_string();
+    let provenance = format!(
+        "[template]\nurl = {}\nref = {}\nsha = {}\n\n",
+        quote(url),
+        quote(reference),
+        quote(sha)
+    );
+    std::fs::write(&path, format!("{provenance}{text}"))
+        .with_context(|| format!("writing {}", path.display()))?;
+    parsed.template = Some(Template {
+        url: url.to_owned(),
+        reference: reference.to_owned(),
+        sha: sha.to_owned(),
+    });
+    Ok(parsed)
+}
+
 /// A workspace contains everything it manages. A checkout that escapes the root
 /// makes the workspace non-portable and behaves differently depending on who
 /// runs the bootstrap — it works in a terminal and fails under a sandboxed
@@ -220,5 +340,21 @@ mod tests {
                 .expect("fixture parses");
         let err = manifest.validate().expect_err("empty tree name");
         assert!(err.to_string().contains("no usable tree name"), "{err}");
+    }
+
+    #[test]
+    fn workspace_name_rewrite_preserves_inline_comments() {
+        let manifest = "[identity]\nname = \"CHANGEME\"\n\
+                        [workspace] # settings\n\
+                        name = \"CHANGEME\" # replaced during init\n";
+
+        let updated = replace_workspace_name(manifest, "demo").expect("placeholder exists");
+
+        assert_eq!(
+            updated,
+            "[identity]\nname = \"CHANGEME\"\n\
+             [workspace] # settings\n\
+             name = \"demo\" # replaced during init\n"
+        );
     }
 }
