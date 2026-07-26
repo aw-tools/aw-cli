@@ -7,8 +7,11 @@
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+/// How long `aw init` waits for a template clone to complete.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long `aw doctor` waits for a remote to answer before declaring it
 /// unreachable. A host that accepts the connection but never replies would
@@ -17,11 +20,106 @@ use std::time::{Duration, Instant};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn init(dir: &Path) -> Result<()> {
-    run(dir, &["init", "--quiet"]).map(|_| ())
+    run(dir, &["init", "--quiet", "--initial-branch=trunk"]).map(|_| ())
 }
 
 pub fn is_repo(dir: &Path) -> bool {
     dir.join(".git").exists()
+}
+
+/// Clone a template source without inheriting any working-tree state from a
+/// local checkout.
+pub fn clone_template(source: &str, destination: &Path) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(["clone", "--quiet", "--no-checkout", "--"])
+        .arg(source)
+        .arg(destination)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .spawn()
+        .with_context(|| format!("cloning template {source}"))?;
+
+    let Some(status) = wait_for_clone(&mut child, CLONE_TIMEOUT)
+        .with_context(|| format!("waiting for template clone {source}"))?
+    else {
+        anyhow::bail!(
+            "cloning template {source} timed out after {}s",
+            CLONE_TIMEOUT.as_secs()
+        );
+    };
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)
+            .with_context(|| format!("reading errors from template clone {source}"))?;
+    }
+    anyhow::ensure!(
+        status.success(),
+        "cloning template {source} failed: {}",
+        stderr.trim()
+    );
+    Ok(())
+}
+
+fn wait_for_clone(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(Some(status)),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(None);
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Resolve a tag, SHA, or local/remote branch to a commit in a cloned
+/// repository, fetching the named ref when the clone did not bring it across.
+pub fn resolve_commit(dir: &Path, reference: Option<&str>) -> Result<String> {
+    let Some(reference) = reference else {
+        return rev_parse_commit(dir, "HEAD");
+    };
+
+    if let Ok(sha) = rev_parse_commit(dir, reference) {
+        return Ok(sha);
+    }
+
+    let remote = format!("refs/remotes/origin/{reference}");
+    if let Ok(sha) = rev_parse_commit(dir, &remote) {
+        return Ok(sha);
+    }
+
+    run(dir, &["fetch", "--quiet", "origin", "--", reference])
+        .with_context(|| format!("fetching template ref {reference:?}"))?;
+    rev_parse_commit(dir, "FETCH_HEAD")
+        .with_context(|| format!("resolving template ref {reference:?}"))
+}
+
+pub fn checkout_detached(dir: &Path, sha: &str) -> Result<()> {
+    run(dir, &["checkout", "--quiet", "--detach", sha]).map(|_| ())
+}
+
+/// Return tracked files selected by an exclude file. `git ls-files` gives
+/// `.seedignore` gitignore-compatible globbing, directory patterns, comments,
+/// and negation without duplicating that matcher in `aw`.
+pub fn tracked_excluded(dir: &Path, exclude_file: &str) -> Result<Vec<String>> {
+    let out = run(
+        dir,
+        &[
+            "ls-files",
+            "--cached",
+            "--ignored",
+            "-z",
+            &format!("--exclude-from={exclude_file}"),
+        ],
+    )?;
+    Ok(out.split_terminator('\0').map(ToOwned::to_owned).collect())
 }
 
 /// Set a repository-local configuration value, returning whether it changed.
@@ -137,6 +235,12 @@ fn run(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn rev_parse_commit(dir: &Path, reference: &str) -> Result<String> {
+    let commit = format!("{reference}^{{commit}}");
+    run(dir, &["rev-parse", "--verify", "--end-of-options", &commit])
+        .map(|sha| sha.trim().to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +264,17 @@ mod tests {
             classify_probe(false, "fatal: unable to access: Could not resolve host"),
             RemoteProbe::Unreachable(_)
         ));
+    }
+
+    #[test]
+    fn clone_wait_times_out_and_kills_the_child() {
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+        let started = Instant::now();
+
+        let status = wait_for_clone(&mut child, Duration::from_millis(10)).unwrap();
+
+        assert!(status.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(child.try_wait().unwrap().is_some());
     }
 }

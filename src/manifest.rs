@@ -12,6 +12,8 @@ pub const FILENAME: &str = "workspace.toml";
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
+    #[serde(default)]
+    pub template: Option<Template>,
     pub workspace: Workspace,
     #[serde(default)]
     pub identity: Option<Identity>,
@@ -22,6 +24,14 @@ pub struct Manifest {
 #[derive(Debug, Deserialize)]
 pub struct Workspace {
     pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Template {
+    pub url: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub sha: String,
 }
 
 /// Repository-local git identity, applied to every managed repository.
@@ -129,6 +139,75 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// Reject a re-init whose resolved source conflicts with recorded provenance.
+/// A target without a manifest or provenance is still eligible for its first
+/// template overlay.
+pub fn validate_template(root: &Path, url: &str, reference: &str, sha: &str) -> Result<()> {
+    let path = root.join(FILENAME);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let parsed: Manifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
+    parsed
+        .validate()
+        .with_context(|| format!("in manifest {}", path.display()))?;
+
+    if let Some(existing) = parsed.template.as_ref() {
+        anyhow::ensure!(
+            existing.url == url && existing.reference == reference && existing.sha == sha,
+            "workspace already records template {}@{} ({})",
+            existing.url,
+            existing.reference,
+            existing.sha
+        );
+    }
+    Ok(())
+}
+
+/// Add immutable template provenance without reserialising the human-edited
+/// manifest. A repeat init from the same source is a no-op; a conflicting
+/// source is rejected rather than rewriting history.
+pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Result<Manifest> {
+    let path = root.join(FILENAME);
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut parsed: Manifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
+    parsed
+        .validate()
+        .with_context(|| format!("in manifest {}", path.display()))?;
+
+    if let Some(existing) = parsed.template.as_ref() {
+        anyhow::ensure!(
+            existing.url == url && existing.reference == reference && existing.sha == sha,
+            "workspace already records template {}@{} ({})",
+            existing.url,
+            existing.reference,
+            existing.sha
+        );
+        return Ok(parsed);
+    }
+
+    let quote = |value: &str| toml::Value::String(value.to_owned()).to_string();
+    let provenance = format!(
+        "[template]\nurl = {}\nref = {}\nsha = {}\n\n",
+        quote(url),
+        quote(reference),
+        quote(sha)
+    );
+    std::fs::write(&path, format!("{provenance}{text}"))
+        .with_context(|| format!("writing {}", path.display()))?;
+    parsed.template = Some(Template {
+        url: url.to_owned(),
+        reference: reference.to_owned(),
+        sha: sha.to_owned(),
+    });
+    Ok(parsed)
 }
 
 /// A workspace contains everything it manages. A checkout that escapes the root

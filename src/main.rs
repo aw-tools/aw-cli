@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Verb {
-    /// Create a new workspace from the built-in template.
+    /// Create a new workspace from a cloned template.
     Init {
         /// Directory to create. Defaults to the current directory.
         dir: Option<PathBuf>,
@@ -33,6 +33,9 @@ enum Verb {
         /// name with any `.workspace` suffix removed.
         #[arg(long)]
         name: Option<String>,
+        /// Template URL or local path, optionally followed by `@ref`.
+        #[arg(long)]
+        template: Option<String>,
     },
     /// Clone missing repositories, converge configuration, link skills.
     Bootstrap {
@@ -61,22 +64,40 @@ fn main() -> ExitCode {
 /// this rather than an error, because a failed check is a finding, not a crash.
 fn run() -> Result<bool> {
     match Cli::parse().command {
-        Verb::Init { dir, name } => init(dir, name).map(|()| true),
+        Verb::Init {
+            dir,
+            name,
+            template,
+        } => init(dir, name, template.as_deref()).map(|()| true),
         Verb::Bootstrap { dir } => bootstrap(&manifest::resolve_root(dir)?),
         Verb::Doctor { dir } => doctor(&manifest::resolve_root(dir)?),
     }
 }
 
-fn init(dir: Option<PathBuf>, name: Option<String>) -> Result<()> {
+fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> Result<()> {
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let root =
         std::fs::canonicalize(&dir).with_context(|| format!("resolving {}", dir.display()))?;
 
-    let created = template::instantiate(&root)?;
+    let source = template::Source::parse(template)?;
+    let prepared = template::prepare(&source)?;
+    manifest::validate_template(
+        &root,
+        &source.url,
+        source.reference.as_deref().unwrap_or(""),
+        &prepared.sha,
+    )?;
     let name = name.unwrap_or_else(|| default_name(&root));
     validate_name(&name)?;
+    let created = template::materialise(&root, &prepared)?;
     set_workspace_name(&root, &name)?;
+    let manifest = manifest::record_template(
+        &root,
+        &source.url,
+        source.reference.as_deref().unwrap_or(""),
+        &prepared.sha,
+    )?;
 
     if git::is_repo(&root) {
         println!("repo      already a git repository");
@@ -85,6 +106,16 @@ fn init(dir: Option<PathBuf>, name: Option<String>) -> Result<()> {
         println!("repo      git init");
     }
 
+    for (key, value) in garden::identity_pairs(manifest.identity.as_ref()) {
+        git::set_config(&root, key, &value)?;
+    }
+
+    println!(
+        "source    {}@{} ({})",
+        source.url,
+        source.reference.as_deref().unwrap_or(""),
+        prepared.sha
+    );
     if created.is_empty() {
         println!("template  no changes — every file already present");
     } else {
@@ -129,6 +160,13 @@ fn validate_name(name: &str) -> Result<()> {
 /// manifest the human has already edited untouched.
 fn set_workspace_name(root: &Path, name: &str) -> Result<()> {
     let path = root.join(manifest::FILENAME);
+    let metadata = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("reading metadata for {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "{} must be a regular file",
+        path.display()
+    );
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let updated = text.replacen("name = \"CHANGEME\"", &format!("name = \"{name}\""), 1);
