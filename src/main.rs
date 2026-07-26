@@ -91,7 +91,9 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     let name = name.unwrap_or_else(|| default_name(&root));
     validate_name(&name)?;
     let created = template::materialise(&root, &prepared)?;
-    set_workspace_name(&root, &name)?;
+    if created.iter().any(|path| path == manifest::FILENAME) {
+        set_workspace_name(&root, &name)?;
+    }
     let manifest = manifest::record_template(
         &root,
         &source.url,
@@ -169,10 +171,7 @@ fn set_workspace_name(root: &Path, name: &str) -> Result<()> {
     );
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let updated = text.replacen("name = \"CHANGEME\"", &format!("name = \"{name}\""), 1);
-    if updated == text {
-        return Ok(());
-    }
+    let updated = manifest::replace_workspace_name(&text, name)?;
     std::fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))
 }
 
@@ -370,5 +369,24 @@ mod tests {
         assert!(validate_name("bad\\slash").is_err());
         assert!(validate_name("bad\nnewline").is_err());
         assert!(validate_name("   ").is_err());
+    }
+
+    #[test]
+    fn workspace_name_rewrite_does_not_touch_identity() {
+        let root = std::env::temp_dir().join(format!("aw-name-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join(manifest::FILENAME),
+            "[identity]\nname = \"CHANGEME\"\n\n[workspace]\nname = \"CHANGEME\"\n",
+        )
+        .unwrap();
+
+        set_workspace_name(&root, "demo").unwrap();
+
+        let text = std::fs::read_to_string(root.join(manifest::FILENAME)).unwrap();
+        assert!(text.contains("[identity]\nname = \"CHANGEME\""));
+        assert!(text.contains("[workspace]\nname = \"demo\""));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

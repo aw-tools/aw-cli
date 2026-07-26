@@ -94,7 +94,7 @@ impl Source {
     pub fn parse(spec: Option<&str>) -> Result<Self> {
         let spec = spec.unwrap_or(DEFAULT_URL);
         anyhow::ensure!(!spec.trim().is_empty(), "template source is empty");
-        reject_http_userinfo(spec)?;
+        reject_http_credentials(spec)?;
 
         if spec == DEFAULT_URL {
             return Ok(Self {
@@ -125,23 +125,26 @@ impl Source {
     }
 }
 
-fn reject_http_userinfo(spec: &str) -> Result<()> {
+fn reject_http_credentials(spec: &str) -> Result<()> {
     let Some((scheme, after_scheme)) = spec.split_once("://") else {
         return Ok(());
     };
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return Ok(());
     }
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
+    anyhow::ensure!(
+        !after_scheme.contains(['?', '#']),
+        "HTTP(S) template URLs must not contain credentials, query strings, or fragments; \
+         use a Git credential helper instead"
+    );
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
 
     anyhow::ensure!(
         authority
             .rsplit_once('@')
             .is_none_or(|(userinfo, _)| userinfo.is_empty()),
-        "HTTP(S) template URLs must not contain credentials; use a Git credential helper instead"
+        "HTTP(S) template URLs must not contain credentials, query strings, or fragments; \
+         use a Git credential helper instead"
     );
     Ok(())
 }
@@ -207,6 +210,9 @@ fn scrub_seedignored(root: &Path) -> Result<()> {
             "seedignore selected unsafe path {}",
             relative.display()
         );
+        if relative == Path::new(".seedignore") {
+            continue;
+        }
         let path = root.join(relative);
         if path.is_symlink() || path.is_file() {
             std::fs::remove_file(&path)
@@ -244,6 +250,16 @@ fn validate_contract(root: &Path) -> Result<()> {
             "template contract violation: missing regular file {required}"
         );
     }
+
+    let manifest = crate::manifest::Manifest::load(root)?;
+    anyhow::ensure!(
+        manifest.workspace.name == crate::manifest::WORKSPACE_NAME_PLACEHOLDER,
+        "template contract violation: [workspace] name must be {:?}",
+        crate::manifest::WORKSPACE_NAME_PLACEHOLDER
+    );
+    let text = std::fs::read_to_string(root.join(crate::manifest::FILENAME))
+        .context("reading template manifest")?;
+    crate::manifest::replace_workspace_name(&text, crate::manifest::WORKSPACE_NAME_PLACEHOLDER)?;
     Ok(())
 }
 
@@ -382,11 +398,14 @@ mod tests {
             "https://user:password@example.com/org/template.git",
             "http://ghp_token@example.com/org/template.git",
             "HTTPS://user@example.com/org/template.git",
+            "https://example.com/org/template.git?access_token=secret",
+            "https://example.com/org/template.git#token=secret",
         ] {
             let error = Source::parse(Some(source)).expect_err("credentials are rejected");
             assert_eq!(
                 error.to_string(),
-                "HTTP(S) template URLs must not contain credentials; use a Git credential helper instead"
+                "HTTP(S) template URLs must not contain credentials, query strings, or fragments; \
+                 use a Git credential helper instead"
             );
         }
     }
@@ -435,5 +454,32 @@ mod tests {
             .expect("link fixture");
         let linked = validate_contract(temporary.path()).expect_err("link is not a regular file");
         assert!(linked.to_string().contains(".gitignore"));
+    }
+
+    #[test]
+    fn contract_rejects_an_invalid_manifest() {
+        let temporary = TemporaryDirectory::new().expect("temporary directory");
+        std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
+        std::fs::write(temporary.path().join("workspace.toml"), "[workspace")
+            .expect("manifest fixture");
+
+        let error = validate_contract(temporary.path()).expect_err("manifest must parse");
+
+        assert!(error.to_string().contains("parsing manifest"), "{error:#}");
+    }
+
+    #[test]
+    fn contract_requires_the_workspace_name_placeholder() {
+        let temporary = TemporaryDirectory::new().expect("temporary directory");
+        std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
+        std::fs::write(
+            temporary.path().join("workspace.toml"),
+            "[workspace]\nname = \"already-set\"\n",
+        )
+        .expect("manifest fixture");
+
+        let error = validate_contract(temporary.path()).expect_err("placeholder is required");
+
+        assert!(error.to_string().contains("CHANGEME"), "{error:#}");
     }
 }

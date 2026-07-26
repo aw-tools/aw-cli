@@ -38,16 +38,20 @@ cat >"$WORK/seed-template/.gitignore" <<'EOF'
 !README.md
 !.editorconfig
 !conflicting-source.txt
+!.seedignore
+!CONTRACT.md
+!.github/
+!.github/**
 !bin/
 !bin/**
 EOF
 cat >"$WORK/seed-template/workspace.toml" <<'EOF'
-[workspace]
-name = "CHANGEME"
-
 [identity]
 name = "Template User"
 email = "template@example.com"
+
+[workspace]
+name = "CHANGEME"
 EOF
 cat >"$WORK/seed-template/garden.yaml" <<'EOF'
 garden:
@@ -68,6 +72,14 @@ EOF
 git -C "$WORK/seed-template" add -A
 git -C "$WORK/seed-template" -c user.name=t -c user.email=t@t commit -qm init
 git -C "$WORK/seed-template" tag fixture-v1
+git -C "$WORK/seed-template" tag release
+git -C "$WORK/seed-template" switch -qc release
+echo 'branch release' >"$WORK/seed-template/branch-release.txt"
+git -C "$WORK/seed-template" add -f branch-release.txt
+git -C "$WORK/seed-template" -c user.name=t -c user.email=t@t \
+	commit -qm 'branch release'
+RELEASE_SHA="$(git -C "$WORK/seed-template" rev-parse HEAD)"
+git -C "$WORK/seed-template" switch -q main
 git clone -q --bare "$WORK/seed-template" "$WORK/origins/template.git"
 TEMPLATE_SHA="$(git -C "$WORK/seed-template" rev-parse fixture-v1^{commit})"
 git clone -q "$WORK/seed-template" "$WORK/seed-conflicting-template"
@@ -76,6 +88,12 @@ git -C "$WORK/seed-conflicting-template" add conflicting-source.txt
 git -C "$WORK/seed-conflicting-template" -c user.name=t -c user.email=t@t \
 	commit -qm 'conflicting source'
 git clone -q --bare "$WORK/seed-conflicting-template" "$WORK/origins/conflicting-template.git"
+git clone -q "$WORK/seed-template" "$WORK/seed-invalid-template"
+printf '[workspace\n' >"$WORK/seed-invalid-template/workspace.toml"
+git -C "$WORK/seed-invalid-template" add workspace.toml
+git -C "$WORK/seed-invalid-template" -c user.name=t -c user.email=t@t \
+	commit -qm 'invalid manifest'
+git clone -q --bare "$WORK/seed-invalid-template" "$WORK/origins/invalid-template.git"
 
 # Four member repositories. The shared skills repository is an ordinary member
 # that happens to contain only skills, so it needs no special manifest section.
@@ -157,6 +175,18 @@ assert "conflicting-source file does not reach the target" \
 assert "conflicting-source re-init leaves the target byte-for-byte unchanged" \
 	"$(diff -qr "$WORK/demo-before-reinit" "$WORK/demo.workspace")" ""
 
+mkdir -p "$WORK/invalid.workspace"
+echo 'keep this marker' >"$WORK/invalid.workspace/marker.txt"
+cp -a "$WORK/invalid.workspace" "$WORK/invalid-before-init"
+if "$AW" init --template "$WORK/origins/invalid-template.git@main" \
+	"$WORK/invalid.workspace" --name invalid >"$WORK/invalid-init.log" 2>&1; then
+	fail "invalid-manifest init fails"
+else
+	pass "invalid-manifest init fails"
+fi
+assert "invalid-manifest init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/invalid-before-init" "$WORK/invalid.workspace")" ""
+
 "$AW" init --template "$WORK/seed-template" \
 	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
 assert "init accepts a local working-tree template" \
@@ -179,6 +209,44 @@ assert "init resolves a SHA ref" \
 	"$(grep -c "^ref = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
 assert "SHA ref records its resolved SHA" \
 	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
+
+if "$AW" init --template "$WORK/origins/template.git@release" \
+	"$WORK/ambiguous.workspace" --name ambiguous >"$WORK/init-ambiguous.log" 2>&1; then
+	fail "ambiguous tag and branch ref is rejected"
+else
+	pass "ambiguous tag and branch ref is rejected"
+fi
+
+"$AW" init --template "$WORK/origins/template.git@refs/tags/release" \
+	"$WORK/qualified-tag.workspace" --name qualified-tag \
+	>"$WORK/init-qualified-tag.log" 2>&1
+assert "qualified tag ref selects the tag commit" \
+	"$([ -e "$WORK/qualified-tag.workspace/branch-release.txt" ] && echo branch || echo tag)" tag
+assert "qualified tag records its resolved SHA" \
+	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" \
+		"$WORK/qualified-tag.workspace/workspace.toml")" 1
+
+"$AW" init --template "$WORK/origins/template.git@refs/heads/release" \
+	"$WORK/qualified-branch.workspace" --name qualified \
+	>"$WORK/init-qualified-branch.log" 2>&1
+assert "qualified branch ref fetches the requested commit" \
+	"$(cat "$WORK/qualified-branch.workspace/branch-release.txt")" 'branch release'
+assert "qualified branch records its resolved SHA" \
+	"$(grep -c "^sha = \"$RELEASE_SHA\"$" \
+		"$WORK/qualified-branch.workspace/workspace.toml")" 1
+
+mkdir -p "$WORK/missing-ref.workspace"
+echo 'keep this marker' >"$WORK/missing-ref.workspace/marker.txt"
+cp -a "$WORK/missing-ref.workspace" "$WORK/missing-ref-before-init"
+if "$AW" init --template "$WORK/origins/template.git@does-not-exist" \
+	"$WORK/missing-ref.workspace" --name missing \
+	>"$WORK/init-missing-ref.log" 2>&1; then
+	fail "missing ref is rejected"
+else
+	pass "missing ref is rejected"
+fi
+assert "missing-ref init leaves the target byte-for-byte unchanged" \
+	"$(diff -qr "$WORK/missing-ref-before-init" "$WORK/missing-ref.workspace")" ""
 
 # --- manifest ----------------------------------------------------------------
 cat >>"$WORK/demo.workspace/workspace.toml" <<EOF

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub const FILENAME: &str = "workspace.toml";
+pub const WORKSPACE_NAME_PLACEHOLDER: &str = "CHANGEME";
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -139,6 +140,46 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// Replace the template placeholder only in the `[workspace]` table.
+///
+/// Templates are hand-authored and retain comments and ordering, so this
+/// transform deliberately edits the one contract line instead of
+/// reserialising the whole manifest.
+pub fn replace_workspace_name(text: &str, name: &str) -> Result<String> {
+    let target = format!("name = \"{WORKSPACE_NAME_PLACEHOLDER}\"");
+    let mut in_workspace = false;
+    let mut offset = 0;
+
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == "[workspace]"
+            || trimmed
+                .strip_prefix("[workspace]")
+                .is_some_and(|rest| rest.trim_start().starts_with('#'))
+        {
+            in_workspace = true;
+        } else if trimmed.starts_with('[') {
+            in_workspace = false;
+        } else if in_workspace {
+            let content = line.trim_start();
+            if let Some(rest) = content.strip_prefix(&target)
+                && (rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+            {
+                let start = offset + line.len() - content.len();
+                let end = start + target.len();
+                let mut updated = text.to_owned();
+                updated.replace_range(start..end, &format!("name = \"{name}\""));
+                return Ok(updated);
+            }
+        }
+        offset += line.len();
+    }
+
+    anyhow::bail!(
+        "template contract violation: [workspace] must contain name = \"{WORKSPACE_NAME_PLACEHOLDER}\""
+    )
 }
 
 /// Reject a re-init whose resolved source conflicts with recorded provenance.
@@ -299,5 +340,21 @@ mod tests {
                 .expect("fixture parses");
         let err = manifest.validate().expect_err("empty tree name");
         assert!(err.to_string().contains("no usable tree name"), "{err}");
+    }
+
+    #[test]
+    fn workspace_name_rewrite_preserves_inline_comments() {
+        let manifest = "[identity]\nname = \"CHANGEME\"\n\
+                        [workspace] # settings\n\
+                        name = \"CHANGEME\" # replaced during init\n";
+
+        let updated = replace_workspace_name(manifest, "demo").expect("placeholder exists");
+
+        assert_eq!(
+            updated,
+            "[identity]\nname = \"CHANGEME\"\n\
+             [workspace] # settings\n\
+             name = \"demo\" # replaced during init\n"
+        );
     }
 }

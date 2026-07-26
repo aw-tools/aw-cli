@@ -5,13 +5,16 @@
 //! work, and matching its behaviour exactly matters more than speed here.
 
 use anyhow::{Context, Result};
-use std::io::Read;
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long `aw init` waits for a template clone to complete.
-const CLONE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long `aw init` waits for each template Git operation to complete.
+const TEMPLATE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
+const STDERR_LIMIT: usize = 64 * 1024;
 
 /// How long `aw doctor` waits for a remote to answer before declaring it
 /// unreachable. A host that accepts the connection but never replies would
@@ -30,43 +33,85 @@ pub fn is_repo(dir: &Path) -> bool {
 /// Clone a template source without inheriting any working-tree state from a
 /// local checkout.
 pub fn clone_template(source: &str, destination: &Path) -> Result<()> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["clone", "--quiet", "--no-checkout", "--"])
         .arg(source)
         .arg(destination)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "true")
-        .spawn()
-        .with_context(|| format!("cloning template {source}"))?;
+        .env("GIT_ASKPASS", "true");
 
-    let Some(status) = wait_for_clone(&mut child, CLONE_TIMEOUT)
+    let Some(output) = run_bounded(&mut command, TEMPLATE_GIT_TIMEOUT)
         .with_context(|| format!("waiting for template clone {source}"))?
     else {
         anyhow::bail!(
             "cloning template {source} timed out after {}s",
-            CLONE_TIMEOUT.as_secs()
+            TEMPLATE_GIT_TIMEOUT.as_secs()
         );
     };
-
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_string(&mut stderr)
-            .with_context(|| format!("reading errors from template clone {source}"))?;
-    }
     anyhow::ensure!(
-        status.success(),
+        output.status.success(),
         "cloning template {source} failed: {}",
-        stderr.trim()
+        output.stderr.trim()
     );
     Ok(())
 }
 
-fn wait_for_clone(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+struct BoundedOutput {
+    status: ExitStatus,
+    stderr: String,
+}
+
+/// Run a child with a deadline, continuously draining but retaining only a
+/// bounded diagnostic.
+fn run_bounded(command: &mut Command, timeout: Duration) -> io::Result<Option<BoundedOutput>> {
+    let (mut stderr, stderr_writer) = UnixStream::pair()?;
+    stderr.set_nonblocking(true)?;
+    let stderr_writer: OwnedFd = stderr_writer.into();
+    let mut child = command.stderr(Stdio::from(stderr_writer)).spawn()?;
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    let status = wait_for_child(&mut child, &mut stderr, &mut bytes, &mut truncated, timeout)?;
+    drain_stderr(&mut stderr, &mut bytes, &mut truncated)?;
+    let mut stderr = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        stderr.push_str("\n[stderr truncated]");
+    }
+    Ok(status.map(|status| BoundedOutput { status, stderr }))
+}
+
+fn drain_stderr(
+    stderr: &mut UnixStream,
+    bytes: &mut Vec<u8>,
+    truncated: &mut bool,
+) -> io::Result<()> {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match stderr.read(&mut chunk) {
+            Ok(0) => return Ok(()),
+            Ok(count) => {
+                let retained = count.min(STDERR_LIMIT.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..retained]);
+                *truncated |= retained < count;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn wait_for_child(
+    child: &mut Child,
+    stderr: &mut UnixStream,
+    bytes: &mut Vec<u8>,
+    truncated: &mut bool,
+    timeout: Duration,
+) -> io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + timeout;
     loop {
+        drain_stderr(stderr, bytes, truncated)?;
         match child.try_wait()? {
             Some(status) => return Ok(Some(status)),
             None if Instant::now() >= deadline => {
@@ -86,19 +131,68 @@ pub fn resolve_commit(dir: &Path, reference: Option<&str>) -> Result<String> {
         return rev_parse_commit(dir, "HEAD");
     };
 
-    if let Ok(sha) = rev_parse_commit(dir, reference) {
+    if reference.starts_with("refs/") {
+        if let Ok(sha) = rev_parse_commit(dir, reference) {
+            return Ok(sha);
+        }
+        fetch_ref(dir, reference)?;
+        return rev_parse_commit(dir, "FETCH_HEAD")
+            .with_context(|| format!("resolving template ref {reference:?}"));
+    }
+
+    if (4..=64).contains(&reference.len())
+        && reference
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+        && let Ok(sha) = rev_parse_commit(dir, reference)
+    {
         return Ok(sha);
     }
 
+    let tag = format!("refs/tags/{reference}");
     let remote = format!("refs/remotes/origin/{reference}");
-    if let Ok(sha) = rev_parse_commit(dir, &remote) {
-        return Ok(sha);
+    let tag_sha = rev_parse_commit(dir, &tag).ok();
+    let remote_sha = rev_parse_commit(dir, &remote).ok();
+    match (tag_sha, remote_sha) {
+        (Some(tag_sha), Some(remote_sha)) if tag_sha != remote_sha => {
+            anyhow::bail!(
+                "template ref {reference:?} is ambiguous: tag and branch resolve to different commits; \
+                 use refs/tags/{reference} or refs/heads/{reference}"
+            );
+        }
+        (Some(sha), _) | (_, Some(sha)) => return Ok(sha),
+        (None, None) => {}
     }
 
-    run(dir, &["fetch", "--quiet", "origin", "--", reference])
-        .with_context(|| format!("fetching template ref {reference:?}"))?;
+    fetch_ref(dir, reference)?;
     rev_parse_commit(dir, "FETCH_HEAD")
         .with_context(|| format!("resolving template ref {reference:?}"))
+}
+
+fn fetch_ref(dir: &Path, reference: &str) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["fetch", "--quiet", "origin", "--", reference])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true");
+    let Some(output) = run_bounded(&mut command, TEMPLATE_GIT_TIMEOUT)
+        .with_context(|| format!("waiting while fetching template ref {reference:?}"))?
+    else {
+        anyhow::bail!(
+            "fetching template ref {reference:?} timed out after {}s",
+            TEMPLATE_GIT_TIMEOUT.as_secs()
+        );
+    };
+    anyhow::ensure!(
+        output.status.success(),
+        "fetching template ref {reference:?} failed: {}",
+        output.stderr.trim()
+    );
+    Ok(())
 }
 
 pub fn checkout_detached(dir: &Path, sha: &str) -> Result<()> {
@@ -267,14 +361,34 @@ mod tests {
     }
 
     #[test]
-    fn clone_wait_times_out_and_kills_the_child() {
-        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+    fn bounded_command_times_out_and_kills_the_child() {
+        let mut command = Command::new("sleep");
+        command.arg("10");
         let started = Instant::now();
 
-        let status = wait_for_clone(&mut child, Duration::from_millis(10)).unwrap();
+        let output = run_bounded(&mut command, Duration::from_millis(10)).unwrap();
 
-        assert!(status.is_none());
+        assert!(output.is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn bounded_command_caps_stderr_while_the_child_runs() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "{ dd if=/dev/zero bs=1024 count=70 2>/dev/null; } >&2; exit 7",
+        ]);
+
+        let output = run_bounded(&mut command, Duration::from_secs(1))
+            .unwrap()
+            .expect("command finishes");
+
+        assert!(!output.status.success());
+        assert!(output.stderr.ends_with("\n[stderr truncated]"));
+        assert_eq!(
+            output.stderr.len(),
+            STDERR_LIMIT + "\n[stderr truncated]".len()
+        );
     }
 }
