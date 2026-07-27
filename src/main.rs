@@ -11,6 +11,7 @@ mod manifest;
 mod reporting;
 mod skills;
 mod status;
+mod sync;
 mod template;
 
 use anyhow::{Context, Result};
@@ -103,7 +104,7 @@ fn run() -> Result<bool> {
             json,
             exit_code,
         } => status(&manifest::resolve_root(dir)?, json, exit_code),
-        Verb::Sync { dir: _ } => Ok(not_implemented("sync")),
+        Verb::Sync { dir } => sync::run(&manifest::resolve_root(dir)?),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
     }
 }
@@ -116,11 +117,6 @@ fn status(root: &Path, json: bool, exit_code: bool) -> Result<bool> {
         print!("{}", report.render_human());
     }
     Ok(!exit_code || !report.has_findings())
-}
-
-fn not_implemented(verb: &str) -> bool {
-    eprintln!("aw: {verb} is not implemented");
-    false
 }
 
 fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> Result<()> {

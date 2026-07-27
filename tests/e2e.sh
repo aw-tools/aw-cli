@@ -902,14 +902,6 @@ else
 	fail "status --exit-code ignores dirty working trees"
 fi
 
-if "$AW" sync "$WORK/status.workspace" >"$WORK/sync.out" 2>"$WORK/sync.err"; then
-	fail "sync stub exits non-zero"
-else
-	pass "sync stub exits non-zero"
-fi
-assert "sync stub reports that it is not implemented" \
-	"$(grep -c 'not implemented' "$WORK/sync.err")" 1
-
 cat >>"$WORK/status.workspace/workspace.toml" <<EOF
 
 [[repo]]
@@ -1063,6 +1055,118 @@ assert "status does not duplicate listed-but-absent drift in new sections" \
 		grep -c '^missing[[:space:]]' || true)" 0
 }
 
+# --- sync --------------------------------------------------------------------
+case_sync() {
+prepare_demo_workspace
+"$AW" bootstrap "$WORK/demo.workspace" >/dev/null 2>&1
+cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "missing"
+url = "$WORK/origins/alpha.git"
+EOF
+
+# Give gamma an isolated origin and advance only its remote branch. A successful
+# sync must fetch this commit without moving the checkout's HEAD.
+git clone -q --bare "$WORK/origins/gamma.git" "$WORK/gamma-sync.git"
+git -C "$WORK/demo.workspace/gamma" remote set-url origin "$WORK/gamma-sync.git"
+git clone -q "$WORK/gamma-sync.git" "$WORK/gamma-upstream"
+echo "gamma remote update" >>"$WORK/gamma-upstream/file.txt"
+git -C "$WORK/gamma-upstream" add file.txt
+git -C "$WORK/gamma-upstream" -c user.name=t -c user.email=t@t \
+	commit -qm "remote update"
+git -C "$WORK/gamma-upstream" push -q origin HEAD:main
+GAMMA_REMOTE_HEAD="$(git -C "$WORK/gamma-upstream" rev-parse HEAD)"
+
+# Beta is deliberately dirty and gains a new opted-in skill. Sync may link the
+# skill at the workspace layer, but must not alter beta's own status or HEAD.
+echo "dirty local" >>"$WORK/demo.workspace/beta/file.txt"
+seed_skill "$WORK/demo.workspace/beta" .claude/skills/sync-added \
+	"Skill added before sync."
+
+# Alpha's failure must be reported without stopping later member fetches.
+git -C "$WORK/demo.workspace/alpha" remote set-url origin \
+	"$WORK/unreachable.git"
+
+for name in alpha beta gamma skills; do
+	git -C "$WORK/demo.workspace/$name" rev-parse HEAD \
+		>"$WORK/$name.head.before"
+	git -C "$WORK/demo.workspace/$name" status --porcelain \
+		>"$WORK/$name.status.before"
+done
+
+REAL_GIT="$(command -v git)"
+mkdir -p "$WORK/fake-bin"
+cat >"$WORK/fake-bin/git" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"\$GIT_LOG"
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$WORK/fake-bin/git"
+
+if GIT_LOG="$WORK/sync-git.log" PATH="$WORK/fake-bin:$PATH" \
+	"$AW" sync "$WORK/demo.workspace" >"$WORK/sync.log" \
+	2>"$WORK/sync.err"; then
+	fail "sync exits non-zero when a member fetch fails"
+else
+	pass "sync exits non-zero when a member fetch fails"
+fi
+
+assert "sync reports the failed member" \
+	"$(grep -c '^repo[[:space:]]*alpha[[:space:]]*FAILED' "$WORK/sync.log")" 1
+for name in beta gamma skills; do
+	assert "sync reports $name fetched" \
+		"$(grep -c "^repo[[:space:]]*$name[[:space:]]*fetched" \
+			"$WORK/sync.log")" 1
+done
+assert "sync continues fetching after a failure" \
+	"$(grep -c '^-C .*/skills fetch$' "$WORK/sync-git.log")" 1
+assert "sync skips an absent member" \
+	"$(grep -c '^-C .*/missing fetch$' "$WORK/sync-git.log" || true)" 0
+assert "sync does not fetch the workspace repository" \
+	"$(grep -c "^-C $WORK/demo.workspace fetch$" "$WORK/sync-git.log" || true)" 0
+assert "sync fetches the new remote commit" \
+	"$(git -C "$WORK/demo.workspace/gamma" rev-parse refs/remotes/origin/main)" \
+	"$GAMMA_REMOTE_HEAD"
+assert "sync reports fetch failures on stdout" \
+	"$(wc -c <"$WORK/sync.err" | tr -d ' ')" 0
+
+for name in alpha beta gamma skills; do
+	git -C "$WORK/demo.workspace/$name" rev-parse HEAD \
+		>"$WORK/$name.head.after"
+	git -C "$WORK/demo.workspace/$name" status --porcelain \
+		>"$WORK/$name.status.after"
+	assert "sync leaves $name HEAD unchanged" \
+		"$(
+			cmp -s "$WORK/$name.head.before" "$WORK/$name.head.after" &&
+				echo same || echo changed
+		)" same
+	assert "sync leaves $name porcelain unchanged" \
+		"$(
+			cmp -s "$WORK/$name.status.before" "$WORK/$name.status.after" &&
+				echo same || echo changed
+		)" same
+done
+
+for dir in .claude/skills .agents/skills; do
+	assert "sync links a newly appeared skill in $dir" \
+		"$(grep -c 'Skill added before sync' \
+			"$WORK/demo.workspace/$dir/sync-added/SKILL.md")" 1
+done
+assert "sync reports each changed harness link" \
+	"$(grep -c 'skills.*1 link(s) changed' "$WORK/sync.log")" 2
+assert "sync reports shadowing during re-link" \
+	"$(grep -c '^shadowed[[:space:]]*release' "$WORK/sync.log")" 1
+
+git -C "$WORK/demo.workspace/alpha" remote set-url origin \
+	"$WORK/origins/alpha.git"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-clean.log" 2>&1; then
+	pass "sync exits zero when every present member fetches"
+else
+	fail "sync exits zero when every present member fetches"
+fi
+}
+
 set +e
 run_case init case_init
 run_case bootstrap case_bootstrap
@@ -1072,6 +1176,7 @@ run_case doctor case_doctor
 run_case status-fixtures case_status_fixtures
 run_case status case_status
 run_case status-drift case_status_drift
+run_case sync case_sync
 
 if [ "$FAILED" -eq 0 ]; then
 	echo

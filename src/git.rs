@@ -22,6 +22,12 @@ const STDERR_LIMIT: usize = 64 * 1024;
 /// later.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Result of refreshing a repository's default remote.
+pub enum FetchOutcome {
+    Fetched,
+    Failed(String),
+}
+
 pub fn init(dir: &Path) -> Result<()> {
     run(dir, &["init", "--quiet", "--initial-branch=trunk"]).map(|_| ())
 }
@@ -433,6 +439,41 @@ pub fn set_config_if_unset(dir: &Path, key: &str, value: &str) -> Result<bool> {
     }
     run(dir, &["config", "--local", "--", key, value])?;
     Ok(true)
+}
+
+/// Fetch a repository's default remote without changing its working tree or
+/// checked-out commit.
+pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .arg("fetch")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true");
+
+    let Some(output) = run_bounded(&mut command, PROBE_TIMEOUT)
+        .with_context(|| format!("waiting for git fetch in {}", dir.display()))?
+    else {
+        return Ok(FetchOutcome::Failed(format!(
+            "no response within {}s",
+            PROBE_TIMEOUT.as_secs()
+        )));
+    };
+    if output.status.success() {
+        return Ok(FetchOutcome::Fetched);
+    }
+    let detail = output
+        .stderr
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(
+            || format!("git fetch exited with {}", output.status),
+            |line| line.trim().to_owned(),
+        );
+    Ok(FetchOutcome::Failed(detail))
 }
 
 /// Whether a remote is reachable, distinguishing authentication failures from
