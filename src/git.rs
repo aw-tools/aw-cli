@@ -45,6 +45,165 @@ pub fn is_dirty(dir: &Path) -> Result<bool> {
     run(dir, &["status", "--porcelain"]).map(|output| !output.is_empty())
 }
 
+pub struct UpstreamComparison {
+    pub ahead: u64,
+    pub behind: u64,
+    pub upstream: String,
+}
+
+/// Compare `HEAD` with its tracked upstream using local refs only.
+pub fn upstream_comparison(dir: &Path) -> Result<Option<UpstreamComparison>> {
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .context("reading the current branch")?;
+    if head.status.code() == Some(1) {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        head.status.success(),
+        "reading the current branch failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&head.stderr).trim()
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    let upstream = run(
+        dir,
+        &["for-each-ref", "--format=%(upstream)", "--count=1", &head],
+    )?;
+    let upstream = upstream.trim();
+    if upstream.is_empty() {
+        return Ok(None);
+    }
+    if !ref_exists(dir, upstream)? {
+        return Ok(None);
+    }
+
+    let range = format!("{upstream}...HEAD");
+    let counts = run(dir, &["rev-list", "--left-right", "--count", &range])?;
+    let mut counts = counts.split_whitespace();
+    let behind = parse_count(counts.next(), "behind", dir)?;
+    let ahead = parse_count(counts.next(), "ahead", dir)?;
+    anyhow::ensure!(
+        counts.next().is_none(),
+        "reading ahead/behind counts failed in {}: unexpected output",
+        dir.display()
+    );
+    Ok(Some(UpstreamComparison {
+        ahead,
+        behind,
+        upstream: upstream.to_owned(),
+    }))
+}
+
+/// Return the newest reflog timestamp for a remote-tracking ref, if retained.
+pub fn newest_remote_reflog_timestamp(dir: &Path, reference: &str) -> Result<Option<u64>> {
+    if !reference.starts_with("refs/remotes/") {
+        return Ok(None);
+    }
+    let output = run(
+        dir,
+        &[
+            "reflog",
+            "show",
+            "-1",
+            "--date=unix",
+            "--format=%gD",
+            reference,
+        ],
+    )?;
+    parse_optional_reflog_timestamp(output.trim(), reference, dir)
+}
+
+/// Return the timestamp of the clone entry in `HEAD`'s reflog, if retained.
+pub fn clone_reflog_timestamp(dir: &Path) -> Result<Option<u64>> {
+    let reflog = run(dir, &["rev-parse", "--git-path", "logs/HEAD"])?;
+    let reflog = Path::new(reflog.trim());
+    let reflog = if reflog.is_absolute() {
+        reflog.to_owned()
+    } else {
+        dir.join(reflog)
+    };
+    match std::fs::metadata(&reflog) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting HEAD reflog in {}", dir.display()));
+        }
+    }
+
+    let output = run(
+        dir,
+        &[
+            "reflog",
+            "show",
+            "--date=unix",
+            "--format=%gD%x09%gs",
+            "HEAD",
+        ],
+    )?;
+    for line in output.lines() {
+        let Some((selector, subject)) = line.split_once('\t') else {
+            anyhow::bail!(
+                "reading HEAD reflog failed in {}: unexpected output",
+                dir.display()
+            );
+        };
+        if subject.starts_with("clone:") {
+            return parse_optional_reflog_timestamp(selector, "HEAD clone entry", dir);
+        }
+    }
+    Ok(None)
+}
+
+fn ref_exists(dir: &Path, reference: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["show-ref", "--verify", "--quiet", reference])
+        .output()
+        .with_context(|| format!("checking upstream ref in {}", dir.display()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => anyhow::bail!(
+            "checking upstream ref failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+fn parse_count(value: Option<&str>, label: &str, dir: &Path) -> Result<u64> {
+    value
+        .context("missing count")?
+        .parse()
+        .with_context(|| format!("parsing {label} count in {}", dir.display()))
+}
+
+fn parse_optional_reflog_timestamp(value: &str, source: &str, dir: &Path) -> Result<Option<u64>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let timestamp = value
+        .rsplit_once("@{")
+        .map(|(_, timestamp)| timestamp)
+        .and_then(|timestamp| timestamp.strip_suffix('}'))
+        .with_context(|| {
+            format!(
+                "parsing {source} reflog selector in {}: unexpected output",
+                dir.display()
+            )
+        })?;
+    timestamp
+        .parse()
+        .map(Some)
+        .with_context(|| format!("parsing {source} reflog timestamp in {}", dir.display()))
+}
+
 /// Clone a template source without inheriting any working-tree state from a
 /// local checkout.
 pub fn clone_template(source: &str, destination: &Path) -> Result<()> {

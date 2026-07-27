@@ -158,10 +158,16 @@ for name in ahead behind divergent dirty missing; do
 	git init -q --initial-branch=main "$WORK/seed-$name"
 	echo "$name base" >"$WORK/seed-$name/file.txt"
 	git -C "$WORK/seed-$name" add file.txt
-	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm base
+	GIT_AUTHOR_DATE=2000-01-01T00:00:00Z \
+		GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \
+		git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t \
+			commit -qm base
 	echo "$name origin" >>"$WORK/seed-$name/file.txt"
 	git -C "$WORK/seed-$name" add file.txt
-	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm origin
+	GIT_AUTHOR_DATE=2000-01-01T00:00:01Z \
+		GIT_COMMITTER_DATE=2000-01-01T00:00:01Z \
+		git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t \
+			commit -qm origin
 	git -C "$WORK/seed-$name" push -q "$WORK/origins/$name.git" HEAD:main
 done
 
@@ -239,6 +245,14 @@ EOF
 		git clone -q "$WORK/origins/$name.git" "$WORK/status.workspace/$name"
 	done
 
+	git -C "$WORK/status.workspace/dirty" branch local-upstream origin/main
+	git -C "$WORK/status.workspace/dirty" branch --set-upstream-to=local-upstream main \
+		>/dev/null
+
+	git -C "$WORK/status.workspace/behind" update-ref -d refs/remotes/origin/main
+	git -C "$WORK/status.workspace/behind" fetch -q origin \
+		main:refs/remotes/origin/main
+
 	echo 'ahead local' >>"$WORK/status.workspace/ahead/file.txt"
 	git -C "$WORK/status.workspace/ahead" add file.txt
 	git -C "$WORK/status.workspace/ahead" -c user.name=t -c user.email=t@t \
@@ -251,6 +265,8 @@ EOF
 	git -C "$WORK/status.workspace/divergent" add file.txt
 	git -C "$WORK/status.workspace/divergent" -c user.name=t -c user.email=t@t \
 		commit -qm local
+	rm -f "$WORK/status.workspace/divergent/.git/logs/HEAD"
+	rm -f "$WORK/status.workspace/divergent/.git/logs/refs/remotes/origin/main"
 
 	echo 'dirty local' >>"$WORK/status.workspace/dirty/file.txt"
 }
@@ -572,18 +588,40 @@ assert "status reports a clean member working tree" \
 	"$(grep -c '^ahead[[:space:]]*clean$' "$WORK/status-human.log")" 1
 assert "status reports no working tree for an absent member" \
 	"$(grep -c '^missing[[:space:]]*not present$' "$WORK/status-human.log")" 1
+assert "status reports a repository ahead with clone age inline" \
+	"$(grep -Ec '^ahead[[:space:]]+ahead 1, behind 0 \(cloned [0-9]+s ago\)$' \
+		"$WORK/status-human.log")" 1
+assert "status reports a repository behind with fetch age inline" \
+	"$(grep -Ec '^behind[[:space:]]+ahead 0, behind 1 \(fetched [0-9]+s ago\)$' \
+		"$WORK/status-human.log")" 1
+assert "status reports a divergent repository with the unknown-age sync hint" \
+	"$(grep -c '^divergent[[:space:]]*ahead 1, behind 1 (age unknown; run `aw sync` to refresh)$' \
+		"$WORK/status-human.log")" 1
+assert "status reports a clean zero-distance local upstream as cloned" \
+	"$(grep -Ec '^dirty[[:space:]]+ahead 0, behind 0 \(cloned [0-9]+s ago\)$' \
+		"$WORK/status-human.log")" 1
+assert "status reports a repository without an upstream" \
+	"$(grep -c '^workspace[[:space:]]*no upstream$' "$WORK/status-human.log")" 1
+assert "status skips an absent member in the ahead-behind section" \
+	"$(awk '/^ahead\/behind$/ { section = 1; next }
+		section && /^missing[[:space:]]/ { count++ }
+		END { print count + 0 }' "$WORK/status-human.log")" 0
 assert "status performs no remote or fetch command" \
 	"$(grep -Ec '(^| )(ls-remote|fetch)( |$)' "$WORK/status-git.log" || true)" 0
 assert "status writes no diagnostics for ordinary findings" \
 	"$(wc -c <"$WORK/status-human.err" | tr -d ' ')" 0
 
 "$AW" status --json "$WORK/status.workspace" >"$WORK/status.json"
+sed -n '/"name": "ahead_behind"/,$p' "$WORK/status.json" \
+	>"$WORK/status-ahead-behind.json"
 assert "status JSON names the workspace" \
 	"$(grep -c '"workspace": "status"' "$WORK/status.json")" 1
 assert "status JSON includes the presence section" \
 	"$(grep -c '"name": "presence"' "$WORK/status.json")" 1
 assert "status JSON includes the working-tree section" \
 	"$(grep -c '"name": "working_tree"' "$WORK/status.json")" 1
+assert "status JSON includes the ahead-behind section" \
+	"$(grep -c '"name": "ahead_behind"' "$WORK/status.json")" 1
 assert "status JSON reports an absent member" \
 	"$(grep -A2 '"repository": "missing"' "$WORK/status.json" |
 		grep -c '"state": "absent"')" 1
@@ -596,10 +634,33 @@ assert "status JSON reports a dirty member working tree" \
 assert "status JSON reports a clean member working tree" \
 	"$(grep -A2 '"repository": "ahead"' "$WORK/status.json" |
 		grep -c '"state": "clean"')" 1
+assert "status JSON reports ahead and behind counts" \
+	"$(grep -B10 '"repository": "divergent"' "$WORK/status-ahead-behind.json" |
+		grep -Ec '"ahead": 1|\"behind\": 1')" 2
+assert "status JSON reports clone provenance with a raw timestamp" \
+	"$(grep -B10 '"repository": "ahead"' "$WORK/status-ahead-behind.json" |
+		grep -Ec '"kind": "cloned"|\"timestamp\": [0-9]+')" 2
+assert "status JSON reports fetch provenance with a raw timestamp" \
+	"$(grep -B10 '"repository": "behind"' "$WORK/status-ahead-behind.json" |
+		grep -Ec '"kind": "fetched"|\"timestamp\": [0-9]+')" 2
+assert "status JSON reports a zero-distance local upstream as cloned" \
+	"$(grep -B10 '"repository": "dirty"' "$WORK/status-ahead-behind.json" |
+		grep -Ec '"ahead": 0|\"behind\": 0|\"kind\": \"cloned\"')" 3
+assert "status JSON reports unknown provenance without a timestamp" \
+	"$(grep -B10 '"repository": "divergent"' "$WORK/status-ahead-behind.json" |
+		grep -c '"kind": "unknown"')" 1
+assert "status JSON reports a repository without an upstream" \
+	"$(grep -B4 '"repository": "workspace"' "$WORK/status-ahead-behind.json" |
+		grep -c '"state": "no_upstream"')" 1
 assert "status JSON replaces the human table" \
 	"$(grep -c '^workspace[[:space:]]' "$WORK/status.json" || true)" 0
 assert "status help labels JSON unstable during incubation" \
 	"$("$AW" status --help | grep -ci 'unstable during incubation')" 1
+
+git -C "$WORK/status.workspace/dirty" checkout -q --detach
+"$AW" status "$WORK/status.workspace" >"$WORK/status-detached.log"
+assert "status reports detached HEAD as no upstream" \
+	"$(grep -c '^dirty[[:space:]]*no upstream$' "$WORK/status-detached.log")" 1
 
 if "$AW" status --exit-code "$WORK/status.workspace" >/dev/null; then
 	fail "status --exit-code fails for an absent member"
@@ -607,6 +668,15 @@ else
 	pass "status --exit-code fails for an absent member"
 fi
 git clone -q "$WORK/origins/missing.git" "$WORK/status.workspace/missing"
+git -C "$WORK/status.workspace/missing" update-ref -d refs/remotes/origin/main
+if "$AW" status "$WORK/status.workspace" >"$WORK/status-pruned.log" \
+	2>"$WORK/status-pruned.err"; then
+	pass "status tolerates a pruned tracked ref"
+else
+	fail "status tolerates a pruned tracked ref"
+fi
+assert "status reports a pruned tracked ref as no upstream" \
+	"$(grep -c '^missing[[:space:]]*no upstream$' "$WORK/status-pruned.log")" 1
 if "$AW" status --exit-code "$WORK/status.workspace" >/dev/null; then
 	pass "status --exit-code ignores dirty working trees"
 else
