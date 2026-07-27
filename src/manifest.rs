@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 pub const FILENAME: &str = "workspace.toml";
 pub const WORKSPACE_NAME_PLACEHOLDER: &str = "CHANGEME";
@@ -249,6 +250,59 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
         sha: sha.to_owned(),
     });
     Ok(parsed)
+}
+
+/// Resolve a checkout and express it as a portable workspace-relative path.
+pub fn canonicalise_member(root: &Path, path: &Path) -> Result<(PathBuf, String)> {
+    let root = std::fs::canonicalize(root)
+        .with_context(|| format!("resolving workspace root {}", root.display()))?;
+    let checkout = std::fs::canonicalize(path)
+        .with_context(|| format!("resolving checkout {}", path.display()))?;
+    let relative = checkout
+        .strip_prefix(&root)
+        .with_context(|| {
+            format!(
+                "checkout {} is outside the workspace {}",
+                checkout.display(),
+                root.display()
+            )
+        })?
+        .to_str()
+        .with_context(|| {
+            format!(
+                "checkout path {} cannot be represented in the manifest as UTF-8",
+                checkout.display()
+            )
+        })?
+        .to_owned();
+    check_contained(&relative)?;
+    Ok((checkout, relative))
+}
+
+/// Append one repository without reserialising the human-edited manifest.
+pub fn append_repo(root: &Path, repo: &Repo) -> Result<()> {
+    let path = root.join(FILENAME);
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut document: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing manifest {}", path.display()))?;
+
+    let repos = document
+        .entry("repo")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+        .as_array_of_tables_mut()
+        .with_context(|| format!("manifest {} has a non-array repo entry", path.display()))?;
+    let mut table = Table::new();
+    table.insert("path", value(&repo.path));
+    table.insert("url", value(&repo.url));
+    if let Some(branch) = &repo.branch {
+        table.insert("branch", value(branch));
+    }
+    repos.push(table);
+
+    std::fs::write(&path, document.to_string())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// A workspace contains everything it manages. A checkout that escapes the root
