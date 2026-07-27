@@ -3,7 +3,10 @@
 use crate::git;
 use crate::manifest::{self, Manifest, Repo};
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+const LOCK_DIR: &str = ".aw-adopt.lock";
 
 pub fn run(path: &Path) -> Result<()> {
     let root = manifest::resolve_root(None)?;
@@ -33,6 +36,7 @@ pub fn run(path: &Path) -> Result<()> {
         "git common directory",
     )?;
 
+    let _lock = AdoptLock::acquire(&root)?;
     let manifest = Manifest::load(&root)?;
     let mut repo = Repo {
         path: relative,
@@ -87,8 +91,39 @@ pub fn run(path: &Path) -> Result<()> {
         repo.url,
         repo.branch.as_deref().unwrap_or_default()
     );
-    eprintln!("Review workspace.toml with `git diff`, then commit it; `aw adopt` made no commit.");
+    eprintln!(
+        "Review {} in workspace repository {}, then commit it; `aw adopt` made no commit.",
+        root.join(manifest::FILENAME).display(),
+        root.display()
+    );
     Ok(())
+}
+
+struct AdoptLock {
+    path: PathBuf,
+}
+
+impl AdoptLock {
+    fn acquire(root: &Path) -> Result<Self> {
+        let path = root.join(LOCK_DIR);
+        match std::fs::create_dir(&path) {
+            Ok(()) => Ok(Self { path }),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => anyhow::bail!(
+                "another `aw adopt` is running or a stale lock exists at {}; \
+                 if no adoption is running, remove that directory and retry",
+                path.display()
+            ),
+            Err(err) => {
+                Err(err).with_context(|| format!("creating adoption lock {}", path.display()))
+            }
+        }
+    }
+}
+
+impl Drop for AdoptLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
 }
 
 fn ensure_metadata_contained(root: &Path, metadata: &Path, description: &str) -> Result<()> {

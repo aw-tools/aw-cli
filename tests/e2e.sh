@@ -505,8 +505,8 @@ git clone -q "$WORK/origins/alpha.git" "$WORK/adopt.workspace/members/alpha"
 COMMITS_BEFORE="$(git -C "$WORK/adopt.workspace" rev-list --all --count)"
 
 (
-	cd "$WORK/adopt.workspace"
-	"$AW" adopt members/alpha >"$WORK/adopt.log" 2>&1
+	cd "$WORK/adopt.workspace/members/alpha"
+	"$AW" adopt . >"$WORK/adopt.log" 2>&1
 )
 assert "adopt stores a workspace-relative path" \
 	"$(grep -c '^path = "members/alpha"$' "$WORK/adopt.workspace/workspace.toml")" 1
@@ -517,6 +517,10 @@ assert "adopt records the checked-out branch" \
 	"$(grep -c '^branch = "main"$' "$WORK/adopt.workspace/workspace.toml")" 1
 assert "adopt reports the added entry" \
 	"$(grep -c 'members/alpha.*main' "$WORK/adopt.log")" 1
+assert "adopt identifies the changed workspace manifest" \
+	"$(grep -Fc "$WORK/adopt.workspace/workspace.toml" "$WORK/adopt.log")" 1
+assert "adopt identifies the workspace repository" \
+	"$(grep -Fc "workspace repository $WORK/adopt.workspace" "$WORK/adopt.log")" 1
 for comment in \
 	'# existing repository comment' \
 	'# Keep this commented example after the live repository entries.' \
@@ -549,6 +553,24 @@ assert "duplicate adoption names the cause" \
 	"$(grep -c 'already.*manifest' "$WORK/adopt-duplicate.log")" 1
 assert "duplicate adoption leaves the manifest unchanged" \
 	"$(cmp -s "$WORK/adopt-once.toml" \
+		"$WORK/adopt.workspace/workspace.toml" && echo yes || echo no)" yes
+
+git clone -q "$WORK/origins/beta.git" "$WORK/adopt.workspace/locked"
+mkdir "$WORK/adopt.workspace/.aw-adopt.lock"
+cp "$WORK/adopt.workspace/workspace.toml" "$WORK/adopt-locked-before.toml"
+if (
+	cd "$WORK/adopt.workspace"
+	"$AW" adopt locked >"$WORK/adopt-locked.log" 2>&1
+); then
+	fail "adopt lock rejects a concurrent adoption"
+else
+	pass "adopt lock rejects a concurrent adoption"
+fi
+rmdir "$WORK/adopt.workspace/.aw-adopt.lock"
+assert "lock rejection names the concurrent operation" \
+	"$(grep -c 'another `aw adopt` is running' "$WORK/adopt-locked.log")" 1
+assert "lock rejection leaves the manifest unchanged" \
+	"$(cmp -s "$WORK/adopt-locked-before.toml" \
 		"$WORK/adopt.workspace/workspace.toml" && echo yes || echo no)" yes
 
 git clone -q "$WORK/origins/beta.git" \
@@ -650,6 +672,31 @@ else
 fi
 assert "missing-origin rejection names the cause" \
 	"$(grep -c 'no origin remote' "$WORK/adopt-no-origin.log")" 1
+
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/adopt-symlink.workspace" --name adopt-symlink >/dev/null 2>&1
+git clone -q "$WORK/origins/alpha.git" \
+	"$WORK/adopt-symlink.workspace/member"
+cp "$WORK/adopt-symlink.workspace/workspace.toml" \
+	"$WORK/external-workspace.toml"
+cp "$WORK/external-workspace.toml" "$WORK/external-workspace-before.toml"
+rm "$WORK/adopt-symlink.workspace/workspace.toml"
+ln -s "$WORK/external-workspace.toml" \
+	"$WORK/adopt-symlink.workspace/workspace.toml"
+if (
+	cd "$WORK/adopt-symlink.workspace"
+	"$AW" adopt member >"$WORK/adopt-symlink.log" 2>&1
+); then
+	fail "adopt rejects a symlinked workspace manifest"
+else
+	pass "adopt rejects a symlinked workspace manifest"
+fi
+assert "symlink rejection requires a regular manifest" \
+	"$(grep -c 'workspace.toml must be a regular file' \
+		"$WORK/adopt-symlink.log")" 1
+assert "symlink rejection leaves the external manifest unchanged" \
+	"$(cmp -s "$WORK/external-workspace-before.toml" \
+		"$WORK/external-workspace.toml" && echo yes || echo no)" yes
 }
 
 # --- doctor ------------------------------------------------------------------
