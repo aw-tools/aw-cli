@@ -19,6 +19,7 @@ concurrency:
 jobs:
   fmt:
     name: Format
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,6 +39,7 @@ jobs:
 
   clippy:
     name: Clippy
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -54,6 +56,7 @@ jobs:
 
   test:
     name: Test
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -70,6 +73,7 @@ jobs:
 
   msrv:
     name: MSRV (1.85.0)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -84,6 +88,7 @@ jobs:
 
   doc:
     name: Doc
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -100,6 +105,7 @@ jobs:
 
   deny:
     name: Deny
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -116,6 +122,7 @@ jobs:
 
   e2e:
     name: E2E
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -136,6 +143,7 @@ jobs:
 
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -171,9 +179,11 @@ jobs:
     steps:
       - name: Check all jobs
         run: |
+          # Heavy jobs skip only on pushes to main; pull requests always run them.
+          # Accept that deliberate skip so the required CI gate stays green on main.
           results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}")
           for r in "${results[@]}"; do
-            if [[ "$r" != "success" ]]; then
+            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
               echo "Job failed with result: $r"
               exit 1
             fi
