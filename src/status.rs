@@ -650,14 +650,14 @@ impl ReportSection for SkillLinkSection {
             .expect("writing to a string cannot fail");
         }
         for link in &self.dangling {
-            writeln!(output, "{:<24} dangling link", link.name)
+            writeln!(output, "{:<24} dangling link at {}", link.name, link.path)
                 .expect("writing to a string cannot fail");
         }
         for skill in &self.user_owned {
             writeln!(
                 output,
-                "{:<24} user-owned in {}; untouched",
-                skill.name, skill.harness
+                "{:<24} user-owned in {} at {}; untouched",
+                skill.name, skill.harness, skill.path
             )
             .expect("writing to a string cannot fail");
         }

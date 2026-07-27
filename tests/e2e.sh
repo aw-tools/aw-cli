@@ -1079,6 +1079,8 @@ EOF
 	>"$WORK/status-skills-healthy.log"
 "$AW" status --json "$WORK/demo.workspace" \
 	>"$WORK/status-skills-healthy.json"
+sed -n '/"name": "skill_links"/,$p' "$WORK/status-skills-healthy.json" \
+	>"$WORK/status-skills-healthy-section.json"
 assert "status reports a resolved workspace skill" \
 	"$(grep -c '^release[[:space:]]*resolved from workspace$' \
 		"$WORK/status-skills-healthy.log")" 1
@@ -1089,7 +1091,7 @@ assert "status reports both origins for a shadowed skill" \
 	"$(grep -c '^release[[:space:]]*shadowed: member repo by workspace$' \
 		"$WORK/status-skills-healthy.log")" 1
 assert "status reports a user-owned directory as untouched" \
-	"$(grep -c '^mine[[:space:]]*user-owned in Codex; untouched$' \
+	"$(grep -c '^mine[[:space:]]*user-owned in Codex at .agents/skills/mine; untouched$' \
 		"$WORK/status-skills-healthy.log")" 1
 assert "status leaves a user-owned directory in place" \
 	"$([ -d "$WORK/demo.workspace/.agents/skills/mine" ] && echo yes)" yes
@@ -1098,24 +1100,49 @@ assert "status JSON includes the skill-links section" \
 assert "status JSON marks healthy skill-link state as not a finding" \
 	"$(grep -A2 '"name": "skill_links"' "$WORK/status-skills-healthy.json" |
 		grep -c '"finding": false')" 1
-assert "status JSON reports both shadowing origins" \
-	"$(sed -n '/"name": "skill_links"/,$p' "$WORK/status-skills-healthy.json" |
+assert "status JSON reports the resolved workspace skill" \
+	"$(grep -B2 -A2 '"skill": "release"' \
+		"$WORK/status-skills-healthy-section.json" |
+		grep -c '"origin": "workspace"')" 1
+assert "status JSON reports the resolved member skill" \
+	"$(grep -B2 -A2 '"skill": "deploy"' \
+		"$WORK/status-skills-healthy-section.json" |
+		grep -c '"origin": "member repo"')" 1
+assert "status JSON reports the complete shadowed skill" \
+	"$(grep -B2 -A2 '"skill": "release"' \
+		"$WORK/status-skills-healthy-section.json" |
 		grep -Ec '"loser_origin": "member repo"|"winner_origin": "workspace"')" 2
-assert "status JSON reports the user-owned harness" \
-	"$(sed -n '/"name": "skill_links"/,$p' "$WORK/status-skills-healthy.json" |
-		grep -c '"harness": "Codex"')" 1
+assert "status JSON reports the complete user-owned directory" \
+	"$(grep -B2 -A2 '"skill": "mine"' \
+		"$WORK/status-skills-healthy-section.json" |
+		grep -Ec '"harness": "Codex"|"path": ".agents/skills/mine"')" 2
 
 ln -s ../../.skills/gone \
 	"$WORK/demo.workspace/.claude/skills/broken"
+ln -s ../../.skills/gone \
+	"$WORK/demo.workspace/.agents/skills/broken"
 "$AW" status "$WORK/demo.workspace" >"$WORK/status-skills-dangling.log"
 "$AW" status --json "$WORK/demo.workspace" \
 	>"$WORK/status-skills-dangling.json"
-assert "status reports a dangling skill link" \
-	"$(grep -c '^broken[[:space:]]*dangling link$' \
+sed -n '/"name": "skill_links"/,$p' "$WORK/status-skills-dangling.json" \
+	>"$WORK/status-skills-dangling-section.json"
+assert "status reports the dangling Codex skill link" \
+	"$(grep -c '^broken[[:space:]]*dangling link at .agents/skills/broken$' \
+		"$WORK/status-skills-dangling.log")" 1
+assert "status reports the dangling Claude Code skill link" \
+	"$(grep -c '^broken[[:space:]]*dangling link at .claude/skills/broken$' \
 		"$WORK/status-skills-dangling.log")" 1
 assert "status JSON marks a dangling skill link as a finding" \
 	"$(grep -A2 '"name": "skill_links"' "$WORK/status-skills-dangling.json" |
 		grep -c '"finding": true')" 1
+assert "status JSON reports the complete dangling Codex skill link" \
+	"$(grep -B2 -A2 '"skill": "broken"' \
+		"$WORK/status-skills-dangling-section.json" |
+		grep -c '"path": ".agents/skills/broken"')" 1
+assert "status JSON reports the complete dangling Claude Code skill link" \
+	"$(grep -B2 -A2 '"skill": "broken"' \
+		"$WORK/status-skills-dangling-section.json" |
+		grep -c '"path": ".claude/skills/broken"')" 1
 if "$AW" status --exit-code "$WORK/demo.workspace" >/dev/null; then
 	fail "status --exit-code fails for a dangling skill link"
 else
