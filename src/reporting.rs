@@ -83,6 +83,47 @@ pub fn bootstrap_verify(repos: usize, missing: usize, linked: usize, shadowed: u
     )
 }
 
+pub fn sync_workspace(name: &str) -> String {
+    format!("workspace {name}")
+}
+
+pub fn sync_repo_fetched(path: &str) -> String {
+    format!("repo      {path:<24} fetched")
+}
+
+pub fn sync_repo_failed(path: &str, why: &str) -> String {
+    format!("repo      {path:<24} FAILED — {why}")
+}
+
+pub fn sync_repo_skipped(path: &str) -> String {
+    format!("repo      {path:<24} not present, skipped")
+}
+
+pub fn sync_skills(harness: &str, changed: usize) -> String {
+    format!("skills    {harness:<12} {changed} link(s) changed")
+}
+
+pub fn sync_skill(name: &str, origin: &str) -> String {
+    format!("skill     {name:<24} {origin}")
+}
+
+pub fn sync_shadowed(name: &str, origin: &str, winner: &str) -> String {
+    format!("shadowed  {name:<24} {origin} shadowed by {winner}")
+}
+
+pub fn sync_verify(
+    repos: usize,
+    skipped: usize,
+    failed: usize,
+    linked: usize,
+    shadowed: usize,
+) -> String {
+    format!(
+        "verify    {repos} repo(s), {skipped} skipped, {failed} failed, \
+         {linked} skill(s) linked, {shadowed} shadowed"
+    )
+}
+
 pub struct DoctorCheck {
     label: &'static str,
     detail: String,

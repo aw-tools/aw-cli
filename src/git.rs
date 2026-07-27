@@ -22,6 +22,15 @@ const STDERR_LIMIT: usize = 64 * 1024;
 /// later.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long `aw sync` allows a member fetch to transfer data.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Result of refreshing a repository's origin remote.
+pub enum FetchOutcome {
+    Fetched,
+    Failed(String),
+}
+
 pub fn init(dir: &Path) -> Result<()> {
     run(dir, &["init", "--quiet", "--initial-branch=trunk"]).map(|_| ())
 }
@@ -433,6 +442,48 @@ pub fn set_config_if_unset(dir: &Path, key: &str, value: &str) -> Result<bool> {
     }
     run(dir, &["config", "--local", "--", key, value])?;
     Ok(true)
+}
+
+/// Fetch origin branches into remote-tracking refs without changing the
+/// repository's working tree or checked-out commit.
+pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--refmap=",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true");
+
+    let Some(output) = run_bounded(&mut command, FETCH_TIMEOUT)
+        .with_context(|| format!("waiting for git fetch in {}", dir.display()))?
+    else {
+        return Ok(FetchOutcome::Failed(format!(
+            "fetch did not complete within {}s",
+            FETCH_TIMEOUT.as_secs()
+        )));
+    };
+    if output.status.success() {
+        return Ok(FetchOutcome::Fetched);
+    }
+    let detail = output
+        .stderr
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(
+            || format!("git fetch exited with {}", output.status),
+            |line| line.trim().to_owned(),
+        );
+    Ok(FetchOutcome::Failed(detail))
 }
 
 /// Whether a remote is reachable, distinguishing authentication failures from
