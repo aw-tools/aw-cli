@@ -7,13 +7,16 @@
 use crate::garden;
 use crate::git;
 use crate::manifest::Manifest;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const ORIGIN_URL_CONFIG_KEY: &str = "remote.origin.url";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -361,6 +364,178 @@ impl ReportSection for AheadBehindSection {
     }
 }
 
+struct ConfigurationDriftEntry {
+    repository: String,
+    kind: RepositoryKind,
+    keys: Vec<&'static str>,
+}
+
+struct ConfigurationDriftSection {
+    entries: Vec<ConfigurationDriftEntry>,
+}
+
+impl ConfigurationDriftSection {
+    fn inspect(repositories: &[RepositoryState], manifest: &Manifest) -> Result<Self> {
+        let identity = garden::identity_pairs(manifest.identity.as_ref());
+        let mut entries = Vec::new();
+
+        for repository in repositories {
+            if matches!(repository.state, CheckoutState::Absent) {
+                continue;
+            }
+            let mut keys = Vec::new();
+            for (key, expected) in &identity {
+                if git::config_value(&repository.path, key)?.as_deref() != Some(expected) {
+                    keys.push(*key);
+                }
+            }
+
+            match repository.kind {
+                RepositoryKind::Workspace => {
+                    if repository.path.join(crate::HOOKS_DIR).is_dir()
+                        && git::config_value(&repository.path, crate::HOOKS_CONFIG_KEY)?.is_none()
+                    {
+                        keys.push(crate::HOOKS_CONFIG_KEY);
+                    }
+                }
+                RepositoryKind::Member => {
+                    let expected = manifest
+                        .repos
+                        .iter()
+                        .find(|member| member.path == repository.name)
+                        .expect("member repository state comes from the manifest")
+                        .url
+                        .as_str();
+                    if git::config_value(&repository.path, ORIGIN_URL_CONFIG_KEY)?.as_deref()
+                        != Some(expected)
+                    {
+                        keys.push(ORIGIN_URL_CONFIG_KEY);
+                    }
+                }
+            }
+
+            if !keys.is_empty() {
+                entries.push(ConfigurationDriftEntry {
+                    repository: repository.name.clone(),
+                    kind: repository.kind,
+                    keys,
+                });
+            }
+        }
+
+        Ok(Self { entries })
+    }
+}
+
+impl ReportSection for ConfigurationDriftSection {
+    fn name(&self) -> &'static str {
+        "configuration_drift"
+    }
+
+    fn has_finding(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("configuration drift\n");
+        for entry in &self.entries {
+            for key in &entry.keys {
+                writeln!(output, "{:<24} {key}", entry.repository)
+                    .expect("writing to a string cannot fail");
+            }
+        }
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            repository: &'a str,
+            kind: RepositoryKind,
+            keys: &'a [&'static str],
+        }
+
+        serde_json::to_value(
+            self.entries
+                .iter()
+                .map(|entry| Entry {
+                    repository: &entry.repository,
+                    kind: entry.kind,
+                    keys: &entry.keys,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("configuration-drift entries always serialise")
+    }
+}
+
+struct UnlistedCheckoutsSection {
+    paths: Vec<String>,
+}
+
+impl UnlistedCheckoutsSection {
+    fn inspect(root: &Path, manifest: &Manifest) -> Result<Self> {
+        let members = manifest
+            .repos
+            .iter()
+            .map(|repository| PathBuf::from(&repository.path))
+            .collect::<BTreeSet<_>>();
+        let mut paths = Vec::new();
+
+        for entry in std::fs::read_dir(root)
+            .with_context(|| format!("reading workspace root {}", root.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("reading workspace root {}", root.display()))?;
+            let relative = PathBuf::from(entry.file_name());
+            if entry
+                .metadata()
+                .with_context(|| format!("inspecting workspace child {}", entry.path().display()))?
+                .is_dir()
+                && !members.contains(&relative)
+                && git::is_repo_checked(&entry.path())?
+            {
+                paths.push(relative.to_string_lossy().into_owned());
+            }
+        }
+        paths.sort();
+
+        Ok(Self { paths })
+    }
+}
+
+impl ReportSection for UnlistedCheckoutsSection {
+    fn name(&self) -> &'static str {
+        "unlisted_checkouts"
+    }
+
+    fn has_finding(&self) -> bool {
+        false
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("unlisted checkouts\n");
+        for path in &self.paths {
+            writeln!(output, "{path:<24} present, not declared")
+                .expect("writing to a string cannot fail");
+        }
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            path: &'a str,
+        }
+
+        serde_json::to_value(
+            self.paths
+                .iter()
+                .map(|path| Entry { path })
+                .collect::<Vec<_>>(),
+        )
+        .expect("unlisted-checkout entries always serialise")
+    }
+}
+
 fn render_measurement_age(age: MeasurementAge) -> String {
     match age {
         MeasurementAge::Fetched { timestamp } => {
@@ -393,6 +568,8 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     let manifest = Manifest::load(root)?;
     let repositories = inspect_repositories(root, &manifest)?;
     let ahead_behind = AheadBehindSection::inspect(&repositories)?;
+    let configuration_drift = ConfigurationDriftSection::inspect(&repositories, &manifest)?;
+    let unlisted_checkouts = UnlistedCheckoutsSection::inspect(root, &manifest)?;
     let mut report = StatusReport::new(manifest.workspace.name);
     report.add_section(PresenceSection {
         repositories: repositories.clone(),
@@ -401,6 +578,8 @@ pub fn build(root: &Path) -> Result<StatusReport> {
         repositories: repositories.clone(),
     });
     report.add_section(ahead_behind);
+    report.add_section(configuration_drift);
+    report.add_section(unlisted_checkouts);
     Ok(report)
 }
 

@@ -397,9 +397,7 @@ pub fn tracked_excluded(dir: &Path, exclude_file: &str) -> Result<Vec<String>> {
 /// which is what makes a bootstrapped workspace behave identically on a
 /// laptop and on a runner.
 pub fn set_config(dir: &Path, key: &str, value: &str) -> Result<bool> {
-    if run(dir, &["config", "--local", "--get", "--", key])
-        .is_ok_and(|current| current.trim() == value)
-    {
+    if config_value(dir, key)?.as_deref() == Some(value) {
         return Ok(false);
     }
     run(dir, &["config", "--local", "--", key, value])?;

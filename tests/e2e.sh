@@ -218,6 +218,7 @@ EOF
 setup_status_fixtures() {
 	"$AW" init --template "$WORK/seed-template" \
 		"$WORK/status.workspace" --name status >"$WORK/status-init.log" 2>&1
+	git -C "$WORK/status.workspace" config --local core.hooksPath .githooks
 	cat >>"$WORK/status.workspace/workspace.toml" <<EOF
 
 [[repo]]
@@ -243,6 +244,8 @@ EOF
 
 	for name in ahead behind divergent dirty; do
 		git clone -q "$WORK/origins/$name.git" "$WORK/status.workspace/$name"
+		git -C "$WORK/status.workspace/$name" config --local user.name "Template User"
+		git -C "$WORK/status.workspace/$name" config --local user.email template@example.com
 	done
 
 	git -C "$WORK/status.workspace/dirty" branch local-upstream origin/main
@@ -882,6 +885,8 @@ else
 	pass "status --exit-code fails for an absent member"
 fi
 git clone -q "$WORK/origins/missing.git" "$WORK/status.workspace/missing"
+git -C "$WORK/status.workspace/missing" config --local user.name "Template User"
+git -C "$WORK/status.workspace/missing" config --local user.email template@example.com
 git -C "$WORK/status.workspace/missing" update-ref -d refs/remotes/origin/main
 if "$AW" status "$WORK/status.workspace" >"$WORK/status-pruned.log" \
 	2>"$WORK/status-pruned.err"; then
@@ -922,6 +927,116 @@ assert "status reports the repository inspection failure" \
 	"$(grep -c 'inspecting repository metadata' "$WORK/status-blocked.err")" 1
 }
 
+# --- status drift ------------------------------------------------------------
+case_status_drift() {
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/status-drift.workspace" --name status-drift >/dev/null 2>&1
+cat >>"$WORK/status-drift.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "alpha"
+url = "$WORK/origins/alpha.git"
+EOF
+"$AW" bootstrap "$WORK/status-drift.workspace" >/dev/null 2>&1
+git -C "$WORK/status-drift.workspace" config --local core.hooksPath .custom-hooks
+git init -q --initial-branch=main "$WORK/status-drift.workspace/unlisted"
+mkdir -p "$WORK/status-drift.workspace/vendor"
+git init -q --initial-branch=main "$WORK/status-drift.workspace/vendor/beta"
+
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-unlisted.log"
+assert "status reports an unlisted immediate-child checkout" \
+	"$(grep -c '^unlisted[[:space:]]*present, not declared$' \
+		"$WORK/status-unlisted.log")" 1
+assert "status excludes declared members from unlisted checkouts" \
+	"$(sed -n '/^unlisted checkouts$/,$p' "$WORK/status-unlisted.log" |
+		grep -c '^alpha[[:space:]]' || true)" 0
+assert "status ignores a nested unlisted checkout" \
+	"$(grep -c '^vendor/beta[[:space:]]' "$WORK/status-unlisted.log" || true)" 0
+assert "status preserves a user-set workspace hook path" \
+	"$(grep -c 'core\.hooksPath' "$WORK/status-unlisted.log" || true)" 0
+if "$AW" status --exit-code "$WORK/status-drift.workspace" >/dev/null; then
+	pass "status --exit-code ignores unlisted checkouts"
+else
+	fail "status --exit-code ignores unlisted checkouts"
+fi
+
+git -C "$WORK/status-drift.workspace/alpha" \
+	config --local user.email drifted@example.com
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-drift-human.log"
+"$AW" status --json "$WORK/status-drift.workspace" >"$WORK/status-drift.json"
+assert "status reports exactly one drifted config key" \
+	"$(awk '/^configuration drift$/ { section = 1; next }
+		/^unlisted checkouts$/ { section = 0 }
+		section && NF { count++ }
+		END { print count + 0 }' "$WORK/status-drift-human.log")" 1
+assert "status names the drifted repository and key" \
+	"$(grep -c '^alpha[[:space:]]*user\.email$' \
+		"$WORK/status-drift-human.log")" 1
+assert "status does not treat the custom hook path as drift" \
+	"$(grep -c 'core\.hooksPath' "$WORK/status-drift-human.log" || true)" 0
+assert "status JSON includes the configuration-drift section" \
+	"$(grep -c '"name": "configuration_drift"' "$WORK/status-drift.json")" 1
+assert "status JSON marks configuration drift as a finding" \
+	"$(grep -A2 '"name": "configuration_drift"' "$WORK/status-drift.json" |
+		grep -c '"finding": true')" 1
+assert "status JSON names the drifted config key" \
+	"$(grep -c '"user.email"' "$WORK/status-drift.json")" 1
+assert "status JSON includes the unlisted-checkouts section" \
+	"$(grep -c '"name": "unlisted_checkouts"' "$WORK/status-drift.json")" 1
+assert "status JSON does not classify an unlisted checkout as a finding" \
+	"$(grep -A2 '"name": "unlisted_checkouts"' "$WORK/status-drift.json" |
+		grep -c '"finding": false')" 1
+if "$AW" status --exit-code "$WORK/status-drift.workspace" >/dev/null; then
+	fail "status --exit-code fails for config drift"
+else
+	pass "status --exit-code fails for config drift"
+fi
+
+git -C "$WORK/status-drift.workspace/alpha" \
+	config --local user.email template@example.com
+git -C "$WORK/status-drift.workspace/alpha" \
+	config --local remote.origin.url "$WORK/origins/beta.git"
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-origin-drift.log"
+assert "status reports member origin drift" \
+	"$(grep -c '^alpha[[:space:]]*remote\.origin\.url$' \
+		"$WORK/status-origin-drift.log")" 1
+git -C "$WORK/status-drift.workspace/alpha" \
+	config --local remote.origin.url "$WORK/origins/alpha.git"
+git -C "$WORK/status-drift.workspace" config --local --unset core.hooksPath
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-hooks-drift.log"
+assert "status reports an unset managed workspace hook" \
+	"$(grep -c '^workspace[[:space:]]*core\.hooksPath$' \
+		"$WORK/status-hooks-drift.log")" 1
+git -C "$WORK/status-drift.workspace" config --local core.hooksPath .custom-hooks
+
+git -C "$WORK/status-drift.workspace" \
+	config --local user.email 'template@example.com '
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-whitespace-drift.log"
+assert "status reports semantic identity whitespace as drift" \
+	"$(grep -c '^workspace[[:space:]]*user\.email$' \
+		"$WORK/status-whitespace-drift.log")" 1
+"$AW" bootstrap "$WORK/status-drift.workspace" >/dev/null 2>&1
+"$AW" status "$WORK/status-drift.workspace" \
+	>"$WORK/status-whitespace-converged.log"
+assert "bootstrap converges semantic identity whitespace" \
+	"$(grep -c '^workspace[[:space:]]*user\.email$' \
+		"$WORK/status-whitespace-converged.log" || true)" 0
+
+cat >>"$WORK/status-drift.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "missing"
+url = "$WORK/origins/beta.git"
+EOF
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-drift-absent.log"
+assert "status keeps listed-but-absent classification in presence" \
+	"$(grep -c '^missing[[:space:]]*declared, not present$' \
+		"$WORK/status-drift-absent.log")" 1
+assert "status does not duplicate listed-but-absent drift in new sections" \
+	"$(sed -n '/^configuration drift$/,$p' "$WORK/status-drift-absent.log" |
+		grep -c '^missing[[:space:]]' || true)" 0
+}
+
 set +e
 run_case init case_init
 run_case bootstrap case_bootstrap
@@ -930,6 +1045,7 @@ run_case adopt case_adopt
 run_case doctor case_doctor
 run_case status-fixtures case_status_fixtures
 run_case status case_status
+run_case status-drift case_status_drift
 
 if [ "$FAILED" -eq 0 ]; then
 	echo
