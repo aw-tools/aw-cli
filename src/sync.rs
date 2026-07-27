@@ -1,7 +1,11 @@
 //! Refresh remote-tracking refs and workspace skill links.
 
 use crate::git::FetchOutcome;
-use crate::{garden, git, manifest::Manifest, reporting, skills};
+use crate::{
+    garden, git,
+    manifest::{self, Manifest},
+    reporting, skills,
+};
 use anyhow::Result;
 use std::path::Path;
 
@@ -22,6 +26,17 @@ pub fn run(root: &Path) -> Result<bool> {
             continue;
         }
         present += 1;
+        let path = match manifest::canonicalise_member(root, &path) {
+            Ok((path, _)) => path,
+            Err(error) => {
+                failed += 1;
+                println!(
+                    "{}",
+                    reporting::sync_repo_failed(&repo.path, &format!("unsafe checkout: {error}"))
+                );
+                continue;
+            }
+        };
         match git::fetch(&path)? {
             FetchOutcome::Fetched => println!("{}", reporting::sync_repo_fetched(&repo.path)),
             FetchOutcome::Failed(why) => {

@@ -1064,7 +1064,12 @@ cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
 [[repo]]
 path = "missing"
 url = "$WORK/origins/alpha.git"
+
+[[repo]]
+path = "workspace-alias"
+url = "$WORK/origins/alpha.git"
 EOF
+ln -s . "$WORK/demo.workspace/workspace-alias"
 
 # Give gamma an isolated origin and advance only its remote branch. A successful
 # sync must fetch this commit without moving the checkout's HEAD.
@@ -1075,8 +1080,17 @@ echo "gamma remote update" >>"$WORK/gamma-upstream/file.txt"
 git -C "$WORK/gamma-upstream" add file.txt
 git -C "$WORK/gamma-upstream" -c user.name=t -c user.email=t@t \
 	commit -qm "remote update"
-git -C "$WORK/gamma-upstream" push -q origin HEAD:main
+git -C "$WORK/gamma-upstream" tag sync-marker
+git -C "$WORK/gamma-upstream" push -q origin HEAD:main refs/tags/sync-marker
 GAMMA_REMOTE_HEAD="$(git -C "$WORK/gamma-upstream" rev-parse HEAD)"
+
+# A branch-selected alternate remote and an origin refspec targeting a local
+# branch must not affect which remote or namespace sync refreshes.
+git -C "$WORK/demo.workspace/gamma" remote add alternate \
+	"$WORK/origins/beta.git"
+git -C "$WORK/demo.workspace/gamma" config branch.main.remote alternate
+git -C "$WORK/demo.workspace/gamma" config --add remote.origin.fetch \
+	'+refs/heads/main:refs/heads/sync-clobber'
 
 # Beta is deliberately dirty and gains a new opted-in skill. Sync may link the
 # skill at the workspace layer, but must not alter beta's own status or HEAD.
@@ -1114,20 +1128,38 @@ fi
 
 assert "sync reports the failed member" \
 	"$(grep -c '^repo[[:space:]]*alpha[[:space:]]*FAILED' "$WORK/sync.log")" 1
+assert "sync rejects a member resolving to the workspace repository" \
+	"$(grep -c '^repo[[:space:]]*workspace-alias[[:space:]]*FAILED' \
+		"$WORK/sync.log")" 1
 for name in beta gamma skills; do
 	assert "sync reports $name fetched" \
 		"$(grep -c "^repo[[:space:]]*$name[[:space:]]*fetched" \
 			"$WORK/sync.log")" 1
 done
 assert "sync continues fetching after a failure" \
-	"$(grep -c '^-C .*/skills fetch$' "$WORK/sync-git.log")" 1
+	"$(grep -c '^-C .*/skills fetch ' "$WORK/sync-git.log")" 1
 assert "sync skips an absent member" \
-	"$(grep -c '^-C .*/missing fetch$' "$WORK/sync-git.log" || true)" 0
+	"$(grep -c '^-C .*/missing fetch ' "$WORK/sync-git.log" || true)" 0
 assert "sync does not fetch the workspace repository" \
-	"$(grep -c "^-C $WORK/demo.workspace fetch$" "$WORK/sync-git.log" || true)" 0
+	"$(grep -c "^-C $WORK/demo.workspace fetch " "$WORK/sync-git.log" || true)" 0
+assert "sync does not fetch a workspace-repository alias" \
+	"$(grep -c "^-C $WORK/demo.workspace/workspace-alias fetch " \
+		"$WORK/sync-git.log" || true)" 0
 assert "sync fetches the new remote commit" \
 	"$(git -C "$WORK/demo.workspace/gamma" rev-parse refs/remotes/origin/main)" \
 	"$GAMMA_REMOTE_HEAD"
+if git -C "$WORK/demo.workspace/gamma" show-ref --verify --quiet \
+	refs/tags/sync-marker; then
+	fail "sync does not auto-follow tags"
+else
+	pass "sync does not auto-follow tags"
+fi
+if git -C "$WORK/demo.workspace/gamma" show-ref --verify --quiet \
+	refs/heads/sync-clobber; then
+	fail "sync ignores configured refspecs targeting local branches"
+else
+	pass "sync ignores configured refspecs targeting local branches"
+fi
 assert "sync reports fetch failures on stdout" \
 	"$(wc -c <"$WORK/sync.err" | tr -d ' ')" 0
 
@@ -1158,6 +1190,8 @@ assert "sync reports each changed harness link" \
 assert "sync reports shadowing during re-link" \
 	"$(grep -c '^shadowed[[:space:]]*release' "$WORK/sync.log")" 1
 
+rm "$WORK/demo.workspace/workspace-alias"
+ln -s gamma "$WORK/demo.workspace/workspace-alias"
 git -C "$WORK/demo.workspace/alpha" remote set-url origin \
 	"$WORK/origins/alpha.git"
 if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-clean.log" 2>&1; then
