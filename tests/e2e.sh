@@ -1,8 +1,8 @@
 #!/bin/sh
 # End-to-end test for `aw`.
 #
-# Builds a throwaway workspace against local bare repositories, bootstraps it
-# twice, and asserts that the second run is a no-op. Requires `garden` on PATH.
+# Builds isolated throwaway workspaces against shared local bare repositories.
+# Requires `garden` on PATH.
 set -eu
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,13 +11,37 @@ WORK="$REPO/tmp/e2e"
 FAILED=0
 
 pass() { printf 'ok    %s\n' "$1"; }
-fail() { printf 'FAIL  %s\n' "$1"; FAILED=1; }
+fail() { printf 'FAIL  %s\n' "$1"; CASE_FAILED=1; }
 
 assert() {
 	if [ "$2" = "$3" ]; then pass "$1"; else
 		fail "$1"
 		printf '      expected: %s\n      actual:   %s\n' "$3" "$2"
 	fi
+}
+
+run_case() { # label, function
+	(
+		set -eu
+		CASE_FAILED=0
+		WORK="$FIXTURES/cases/$1"
+		rm -rf "$WORK"
+		mkdir -p "$WORK"
+		ln -s "$FIXTURES/origins" "$WORK/origins"
+		for fixture in seed-template seed-conflicting-template seed-invalid-template; do
+			ln -s "$FIXTURES/$fixture" "$WORK/$fixture"
+		done
+		"$2"
+		[ "$CASE_FAILED" -eq 0 ]
+	)
+
+	case "$?" in
+	0) pass "case $1" ;;
+	*)
+		printf 'FAIL  case %s\n' "$1"
+		FAILED=1
+		;;
+	esac
 }
 
 [ -x "$AW" ] || { echo "build first: cargo build" >&2; exit 1; }
@@ -129,11 +153,111 @@ for name in alpha beta gamma skills; do
 	git -C "$WORK/seed-$name" push -q "$WORK/origins/$name.git" HEAD:main
 done
 
+for name in ahead behind divergent dirty missing; do
+	git init -q --bare --initial-branch=main "$WORK/origins/$name.git"
+	git init -q --initial-branch=main "$WORK/seed-$name"
+	echo "$name base" >"$WORK/seed-$name/file.txt"
+	git -C "$WORK/seed-$name" add file.txt
+	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm base
+	echo "$name origin" >>"$WORK/seed-$name/file.txt"
+	git -C "$WORK/seed-$name" add file.txt
+	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm origin
+	git -C "$WORK/seed-$name" push -q "$WORK/origins/$name.git" HEAD:main
+done
+
+FIXTURES="$WORK"
+
+init_demo_workspace() {
+	mkdir -p "$WORK/demo.workspace"
+	echo 'keep this readme' >"$WORK/demo.workspace/README.md"
+	"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
+		"$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
+}
+
+prepare_demo_workspace() {
+	init_demo_workspace
+	cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "alpha"
+url = "$WORK/origins/alpha.git"
+branch = "main"
+
+[[repo]]
+path = "beta"
+url = "$WORK/origins/beta.git"
+skills = true
+
+[[repo]]
+path = "gamma"
+url = "$WORK/origins/gamma.git"
+skills = true
+skill-prefix = true
+
+[[repo]]
+path = "skills"
+url = "$WORK/origins/skills.git"
+skills = ["release"]
+EOF
+
+	mkdir -p "$WORK/demo.workspace/.skills/release"
+	cat >"$WORK/demo.workspace/.skills/release/SKILL.md" <<'EOF'
+---
+name: release
+description: Workspace-local release skill; must win over the shared one.
+---
+EOF
+}
+
+setup_status_fixtures() {
+	"$AW" init --template "$WORK/seed-template" \
+		"$WORK/status.workspace" --name status >"$WORK/status-init.log" 2>&1
+	cat >>"$WORK/status.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "ahead"
+url = "$WORK/origins/ahead.git"
+
+[[repo]]
+path = "behind"
+url = "$WORK/origins/behind.git"
+
+[[repo]]
+path = "divergent"
+url = "$WORK/origins/divergent.git"
+
+[[repo]]
+path = "dirty"
+url = "$WORK/origins/dirty.git"
+
+[[repo]]
+path = "missing"
+url = "$WORK/origins/missing.git"
+EOF
+
+	for name in ahead behind divergent dirty; do
+		git clone -q "$WORK/origins/$name.git" "$WORK/status.workspace/$name"
+	done
+
+	echo 'ahead local' >>"$WORK/status.workspace/ahead/file.txt"
+	git -C "$WORK/status.workspace/ahead" add file.txt
+	git -C "$WORK/status.workspace/ahead" -c user.name=t -c user.email=t@t \
+		commit -qm local
+
+	git -C "$WORK/status.workspace/behind" reset -q --hard HEAD^
+
+	git -C "$WORK/status.workspace/divergent" reset -q --hard HEAD^
+	echo 'divergent local' >>"$WORK/status.workspace/divergent/file.txt"
+	git -C "$WORK/status.workspace/divergent" add file.txt
+	git -C "$WORK/status.workspace/divergent" -c user.name=t -c user.email=t@t \
+		commit -qm local
+
+	echo 'dirty local' >>"$WORK/status.workspace/dirty/file.txt"
+}
+
 # --- init --------------------------------------------------------------------
-mkdir -p "$WORK/demo.workspace"
-echo 'keep this readme' >"$WORK/demo.workspace/README.md"
-"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
-	"$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
+case_init() {
+init_demo_workspace
 assert "init creates a manifest" "$([ -f "$WORK/demo.workspace/workspace.toml" ] && echo yes)" yes
 assert "init creates a git repository" \
 	"$([ -d "$WORK/demo.workspace/.git" ] && echo yes)" yes
@@ -255,42 +379,11 @@ else
 fi
 assert "missing-ref init leaves the target byte-for-byte unchanged" \
 	"$(diff -qr "$WORK/missing-ref-before-init" "$WORK/missing-ref.workspace")" ""
-
-# --- manifest ----------------------------------------------------------------
-cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
-
-[[repo]]
-path = "alpha"
-url = "$WORK/origins/alpha.git"
-branch = "main"
-
-[[repo]]
-path = "beta"
-url = "$WORK/origins/beta.git"
-skills = true
-
-[[repo]]
-path = "gamma"
-url = "$WORK/origins/gamma.git"
-skills = true
-skill-prefix = true
-
-[[repo]]
-path = "skills"
-url = "$WORK/origins/skills.git"
-skills = ["release"]
-EOF
-
-# A workspace-local skill that collides with the shared repository's name.
-mkdir -p "$WORK/demo.workspace/.skills/release"
-cat >"$WORK/demo.workspace/.skills/release/SKILL.md" <<'EOF'
----
-name: release
-description: Workspace-local release skill; must win over the shared one.
----
-EOF
+}
 
 # --- bootstrap (first run) ---------------------------------------------------
+case_bootstrap() {
+prepare_demo_workspace
 "$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot1.log" 2>&1 ||
 	{ cat "$WORK/boot1.log"; exit 1; }
 
@@ -352,8 +445,10 @@ assert "second bootstrap relinks nothing" \
 	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 2
 assert "second bootstrap moves no HEAD" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)" "$HEAD_BEFORE"
+}
 
 # --- containment: a workspace manages nothing outside itself -----------------
+case_containment() {
 "$AW" init --template "$WORK/seed-template" \
 	"$WORK/escape.workspace" --name escape >/dev/null 2>&1
 cat >>"$WORK/escape.workspace/workspace.toml" <<EOF
@@ -372,8 +467,17 @@ assert "the rejection names the cause" \
 	"$(grep -c 'escapes the workspace' "$WORK/escape.log")" 1
 assert "nothing was cloned outside the workspace" \
 	"$([ -e "$WORK/outside" ] && echo yes || echo no)" no
+}
 
 # --- doctor ------------------------------------------------------------------
+case_doctor() {
+prepare_demo_workspace
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot1.log" 2>&1
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
+"$AW" init --template "$WORK/origins/template.git@main" \
+	"$WORK/branch.workspace" --name branch >"$WORK/init-branch.log" 2>&1
+
 "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor.log" 2>&1 ||
 	{ cat "$WORK/doctor.log"; fail "doctor exits non-zero on a healthy workspace"; }
 assert "doctor reports no failures" "$(grep -c '^FAIL' "$WORK/doctor.log")" 0
@@ -419,6 +523,33 @@ ln -s ../../nowhere "$WORK/demo.workspace/.claude/skills/broken"
 "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor2.log" 2>&1 || true
 assert "doctor catches a dangling link" \
 	"$(grep -c 'FAIL  skill links' "$WORK/doctor2.log")" 1
+}
+
+# --- reusable status fixtures -------------------------------------------------
+case_status_fixtures() {
+setup_status_fixtures
+
+assert "ahead fixture is ahead" \
+	"$(git -C "$WORK/status.workspace/ahead" rev-list --left-right --count \
+		HEAD...@{upstream} | tr '\t' ' ')" "1 0"
+assert "behind fixture is behind" \
+	"$(git -C "$WORK/status.workspace/behind" rev-list --left-right --count \
+		HEAD...@{upstream} | tr '\t' ' ')" "0 1"
+assert "divergent fixture is ahead and behind" \
+	"$(git -C "$WORK/status.workspace/divergent" rev-list --left-right --count \
+		HEAD...@{upstream} | tr '\t' ' ')" "1 1"
+assert "dirty fixture has worktree changes" \
+	"$(git -C "$WORK/status.workspace/dirty" status --porcelain | wc -l | tr -d ' ')" 1
+assert "missing fixture is not cloned" \
+	"$([ -e "$WORK/status.workspace/missing" ] && echo present || echo absent)" absent
+}
+
+set +e
+run_case init case_init
+run_case bootstrap case_bootstrap
+run_case containment case_containment
+run_case doctor case_doctor
+run_case status-fixtures case_status_fixtures
 
 if [ "$FAILED" -eq 0 ]; then
 	echo
