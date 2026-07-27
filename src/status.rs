@@ -7,6 +7,7 @@
 use crate::garden;
 use crate::git;
 use crate::manifest::Manifest;
+use crate::skills;
 use anyhow::{Context, Result};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -537,6 +538,213 @@ impl ReportSection for UnlistedCheckoutsSection {
     }
 }
 
+struct ResolvedSkill {
+    name: String,
+    origin: skills::Origin,
+}
+
+struct ShadowedSkill {
+    name: String,
+    loser_origin: skills::Origin,
+    winner_origin: skills::Origin,
+}
+
+struct DanglingSkillLink {
+    name: String,
+    path: String,
+}
+
+struct UserOwnedSkill {
+    name: String,
+    harness: &'static str,
+    path: String,
+}
+
+struct SkillLinkSection {
+    resolved: Vec<ResolvedSkill>,
+    shadowed: Vec<ShadowedSkill>,
+    dangling: Vec<DanglingSkillLink>,
+    user_owned: Vec<UserOwnedSkill>,
+}
+
+impl SkillLinkSection {
+    fn inspect(root: &Path, manifest: &Manifest) -> Result<Self> {
+        let resolution = skills::resolve(root, manifest)?;
+        let resolved = resolution
+            .linked
+            .into_iter()
+            .map(|skill| ResolvedSkill {
+                name: skill.name,
+                origin: skill.origin,
+            })
+            .collect();
+        let shadowed = resolution
+            .shadowed
+            .into_iter()
+            .map(|(skill, winner_origin)| ShadowedSkill {
+                name: skill.name,
+                loser_origin: skill.origin,
+                winner_origin,
+            })
+            .collect();
+        let mut dangling = skills::dangling(root)?
+            .into_iter()
+            .map(|path| DanglingSkillLink {
+                name: path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                ),
+                path: workspace_relative(root, &path),
+            })
+            .collect::<Vec<_>>();
+        dangling.sort_by(|left, right| left.path.cmp(&right.path));
+        let user_owned = skills::user_owned_directories(root)?
+            .into_iter()
+            .map(|directory| UserOwnedSkill {
+                name: directory.path.file_name().map_or_else(
+                    || directory.path.display().to_string(),
+                    |name| name.to_string_lossy().into(),
+                ),
+                harness: directory.harness,
+                path: workspace_relative(root, &directory.path),
+            })
+            .collect();
+
+        Ok(Self {
+            resolved,
+            shadowed,
+            dangling,
+            user_owned,
+        })
+    }
+}
+
+impl ReportSection for SkillLinkSection {
+    fn name(&self) -> &'static str {
+        "skill_links"
+    }
+
+    fn has_finding(&self) -> bool {
+        !self.dangling.is_empty()
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("skill links\n");
+        for skill in &self.resolved {
+            writeln!(
+                output,
+                "{:<24} resolved from {}",
+                skill.name,
+                skill.origin.label()
+            )
+            .expect("writing to a string cannot fail");
+        }
+        for skill in &self.shadowed {
+            writeln!(
+                output,
+                "{:<24} shadowed: {} by {}",
+                skill.name,
+                skill.loser_origin.label(),
+                skill.winner_origin.label()
+            )
+            .expect("writing to a string cannot fail");
+        }
+        for link in &self.dangling {
+            writeln!(output, "{:<24} dangling link", link.name)
+                .expect("writing to a string cannot fail");
+        }
+        for skill in &self.user_owned {
+            writeln!(
+                output,
+                "{:<24} user-owned in {}; untouched",
+                skill.name, skill.harness
+            )
+            .expect("writing to a string cannot fail");
+        }
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct ResolvedEntry<'a> {
+            skill: &'a str,
+            origin: &'static str,
+        }
+
+        #[derive(Serialize)]
+        struct ShadowedEntry<'a> {
+            skill: &'a str,
+            loser_origin: &'static str,
+            winner_origin: &'static str,
+        }
+
+        #[derive(Serialize)]
+        struct PathEntry<'a> {
+            skill: &'a str,
+            path: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct UserOwnedEntry<'a> {
+            skill: &'a str,
+            harness: &'static str,
+            path: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct Data<'a> {
+            resolved: Vec<ResolvedEntry<'a>>,
+            shadowed: Vec<ShadowedEntry<'a>>,
+            dangling: Vec<PathEntry<'a>>,
+            user_owned: Vec<UserOwnedEntry<'a>>,
+        }
+
+        serde_json::to_value(Data {
+            resolved: self
+                .resolved
+                .iter()
+                .map(|skill| ResolvedEntry {
+                    skill: &skill.name,
+                    origin: skill.origin.label(),
+                })
+                .collect(),
+            shadowed: self
+                .shadowed
+                .iter()
+                .map(|skill| ShadowedEntry {
+                    skill: &skill.name,
+                    loser_origin: skill.loser_origin.label(),
+                    winner_origin: skill.winner_origin.label(),
+                })
+                .collect(),
+            dangling: self
+                .dangling
+                .iter()
+                .map(|link| PathEntry {
+                    skill: &link.name,
+                    path: &link.path,
+                })
+                .collect(),
+            user_owned: self
+                .user_owned
+                .iter()
+                .map(|skill| UserOwnedEntry {
+                    skill: &skill.name,
+                    harness: skill.harness,
+                    path: &skill.path,
+                })
+                .collect(),
+        })
+        .expect("skill-link entries always serialise")
+    }
+}
+
+fn workspace_relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn render_measurement_age(age: MeasurementAge) -> String {
     match age {
         MeasurementAge::Fetched { timestamp } => {
@@ -571,6 +779,7 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     let ahead_behind = AheadBehindSection::inspect(&repositories)?;
     let configuration_drift = ConfigurationDriftSection::inspect(&repositories, &manifest)?;
     let unlisted_checkouts = UnlistedCheckoutsSection::inspect(root, &manifest)?;
+    let skill_links = SkillLinkSection::inspect(root, &manifest)?;
     let mut report = StatusReport::new(manifest.workspace.name);
     report.add_section(PresenceSection {
         repositories: repositories.clone(),
@@ -581,6 +790,7 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     report.add_section(ahead_behind);
     report.add_section(configuration_drift);
     report.add_section(unlisted_checkouts);
+    report.add_section(skill_links);
     Ok(report)
 }
 

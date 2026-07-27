@@ -207,6 +207,32 @@ pub fn dangling(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct UserOwnedDirectory {
+    pub harness: &'static str,
+    pub path: PathBuf,
+}
+
+/// Real directories in harness discovery paths. These belong to the user;
+/// linking and pruning leave them untouched.
+pub fn user_owned_directories(root: &Path) -> Result<Vec<UserOwnedDirectory>> {
+    let mut found = Vec::new();
+    for harness in HARNESSES {
+        let mut harness_directories = read_dir(&root.join(harness.dir))?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| !path.is_symlink() && path.is_dir())
+            .map(|path| UserOwnedDirectory {
+                harness: harness.name,
+                path,
+            })
+            .collect::<Vec<_>>();
+        harness_directories.sort_by(|left, right| left.path.cmp(&right.path));
+        found.extend(harness_directories);
+    }
+    Ok(found)
+}
+
 /// Immediate sub-directories that are skills, sorted for deterministic output.
 fn scan_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found: Vec<PathBuf> = read_dir(dir)?
@@ -339,6 +365,27 @@ mod tests {
         assert_eq!(removed, 1, "only the in-workspace stale link is removed");
         assert!(!dir.join("stale").is_symlink(), "stale link removed");
         assert!(dir.join("mine").is_symlink(), "external user link kept");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reports_real_discovery_directories_as_user_owned() {
+        let base = std::env::temp_dir().join("aw-test-user-owned-skills");
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("ws");
+        let dir = root.join(".claude/skills");
+        let managed = root.join(".skills/managed");
+        std::fs::create_dir_all(dir.join("mine")).expect("user-owned skill");
+        std::fs::create_dir_all(&managed).expect("managed skill");
+        std::os::unix::fs::symlink("../../.skills/managed", dir.join("managed"))
+            .expect("managed link");
+
+        let found = user_owned_directories(&root).expect("inspect discovery dirs");
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].harness, "Claude Code");
+        assert_eq!(found[0].path, dir.join("mine"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
