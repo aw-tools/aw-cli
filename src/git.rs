@@ -30,6 +30,21 @@ pub fn is_repo(dir: &Path) -> bool {
     dir.join(".git").exists()
 }
 
+/// Whether repository metadata is present, preserving inspection failures.
+pub fn is_repo_checked(dir: &Path) -> Result<bool> {
+    match std::fs::metadata(dir.join(".git")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("inspecting repository metadata in {}", dir.display())),
+    }
+}
+
+/// Whether a repository has tracked or untracked working-tree changes.
+pub fn is_dirty(dir: &Path) -> Result<bool> {
+    run(dir, &["status", "--porcelain"]).map(|output| !output.is_empty())
+}
+
 /// Clone a template source without inheriting any working-tree state from a
 /// local checkout.
 pub fn clone_template(source: &str, destination: &Path) -> Result<()> {
