@@ -544,12 +544,114 @@ assert "missing fixture is not cloned" \
 	"$([ -e "$WORK/status.workspace/missing" ] && echo present || echo absent)" absent
 }
 
+# --- status ------------------------------------------------------------------
+case_status() {
+setup_status_fixtures
+
+REAL_GIT="$(command -v git)"
+mkdir -p "$WORK/fake-bin"
+cat >"$WORK/fake-bin/git" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"\$GIT_LOG"
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$WORK/fake-bin/git"
+
+GIT_LOG="$WORK/status-git.log" PATH="$WORK/fake-bin:$PATH" \
+	"$AW" status "$WORK/status.workspace" >"$WORK/status-human.log" \
+	2>"$WORK/status-human.err"
+assert "status reports the workspace repository present" \
+	"$(grep -c '^workspace[[:space:]]*present$' "$WORK/status-human.log")" 1
+assert "status reports a member repository present" \
+	"$(grep -c '^dirty[[:space:]]*present$' "$WORK/status-human.log")" 1
+assert "status reports an absent member without probing it" \
+	"$(grep -c '^missing[[:space:]]*declared, not present$' "$WORK/status-human.log")" 1
+assert "status reports a dirty member working tree" \
+	"$(grep -c '^dirty[[:space:]]*dirty$' "$WORK/status-human.log")" 1
+assert "status reports a clean member working tree" \
+	"$(grep -c '^ahead[[:space:]]*clean$' "$WORK/status-human.log")" 1
+assert "status reports no working tree for an absent member" \
+	"$(grep -c '^missing[[:space:]]*not present$' "$WORK/status-human.log")" 1
+assert "status performs no remote or fetch command" \
+	"$(grep -Ec '(^| )(ls-remote|fetch)( |$)' "$WORK/status-git.log" || true)" 0
+assert "status writes no diagnostics for ordinary findings" \
+	"$(wc -c <"$WORK/status-human.err" | tr -d ' ')" 0
+
+"$AW" status --json "$WORK/status.workspace" >"$WORK/status.json"
+assert "status JSON names the workspace" \
+	"$(grep -c '"workspace": "status"' "$WORK/status.json")" 1
+assert "status JSON includes the presence section" \
+	"$(grep -c '"name": "presence"' "$WORK/status.json")" 1
+assert "status JSON includes the working-tree section" \
+	"$(grep -c '"name": "working_tree"' "$WORK/status.json")" 1
+assert "status JSON reports an absent member" \
+	"$(grep -A2 '"repository": "missing"' "$WORK/status.json" |
+		grep -c '"state": "absent"')" 1
+assert "status JSON reports no working tree for an absent member" \
+	"$(grep -A2 '"repository": "missing"' "$WORK/status.json" |
+		grep -c '"state": "not_present"')" 1
+assert "status JSON reports a dirty member working tree" \
+	"$(grep -A2 '"repository": "dirty"' "$WORK/status.json" |
+		grep -c '"state": "dirty"')" 1
+assert "status JSON reports a clean member working tree" \
+	"$(grep -A2 '"repository": "ahead"' "$WORK/status.json" |
+		grep -c '"state": "clean"')" 1
+assert "status JSON replaces the human table" \
+	"$(grep -c '^workspace[[:space:]]' "$WORK/status.json" || true)" 0
+assert "status help labels JSON unstable during incubation" \
+	"$("$AW" status --help | grep -ci 'unstable during incubation')" 1
+
+if "$AW" status --exit-code "$WORK/status.workspace" >/dev/null; then
+	fail "status --exit-code fails for an absent member"
+else
+	pass "status --exit-code fails for an absent member"
+fi
+git clone -q "$WORK/origins/missing.git" "$WORK/status.workspace/missing"
+if "$AW" status --exit-code "$WORK/status.workspace" >/dev/null; then
+	pass "status --exit-code ignores dirty working trees"
+else
+	fail "status --exit-code ignores dirty working trees"
+fi
+
+if "$AW" sync "$WORK/status.workspace" >"$WORK/sync.out" 2>"$WORK/sync.err"; then
+	fail "sync stub exits non-zero"
+else
+	pass "sync stub exits non-zero"
+fi
+assert "sync stub reports that it is not implemented" \
+	"$(grep -c 'not implemented' "$WORK/sync.err")" 1
+if "$AW" adopt "$WORK/status.workspace" >"$WORK/adopt.out" 2>"$WORK/adopt.err"; then
+	fail "adopt stub exits non-zero"
+else
+	pass "adopt stub exits non-zero"
+fi
+assert "adopt stub reports that it is not implemented" \
+	"$(grep -c 'not implemented' "$WORK/adopt.err")" 1
+
+cat >>"$WORK/status.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "blocked/child"
+url = "$WORK/origins/alpha.git"
+EOF
+echo obstruction >"$WORK/status.workspace/blocked"
+if "$AW" status "$WORK/status.workspace" >"$WORK/status-blocked.out" \
+	2>"$WORK/status-blocked.err"; then
+	fail "status fails when repository metadata cannot be inspected"
+else
+	pass "status fails when repository metadata cannot be inspected"
+fi
+assert "status reports the repository inspection failure" \
+	"$(grep -c 'inspecting repository metadata' "$WORK/status-blocked.err")" 1
+}
+
 set +e
 run_case init case_init
 run_case bootstrap case_bootstrap
 run_case containment case_containment
 run_case doctor case_doctor
 run_case status-fixtures case_status_fixtures
+run_case status case_status
 
 if [ "$FAILED" -eq 0 ]; then
 	echo

@@ -9,6 +9,7 @@ mod git;
 mod manifest;
 mod reporting;
 mod skills;
+mod status;
 mod template;
 
 use anyhow::{Context, Result};
@@ -51,6 +52,27 @@ enum Verb {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
+    /// Report repository presence and working-tree state.
+    Status {
+        /// Emit unstable incubation JSON instead of the human report.
+        #[arg(long, help = "Emit JSON (unstable during incubation)")]
+        json: bool,
+        /// Exit non-zero when bootstrap-convergeable findings are present.
+        #[arg(long)]
+        exit_code: bool,
+        /// Workspace root. Defaults to the nearest ancestor with a manifest.
+        dir: Option<PathBuf>,
+    },
+    /// Fetch managed repositories and report changes.
+    Sync {
+        /// Workspace root. Defaults to the nearest ancestor with a manifest.
+        dir: Option<PathBuf>,
+    },
+    /// Add an existing checkout to the workspace manifest.
+    Adopt {
+        /// Existing checkout to add.
+        path: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -75,7 +97,29 @@ fn run() -> Result<bool> {
         } => init(dir, name, template.as_deref()).map(|()| true),
         Verb::Bootstrap { dir } => bootstrap(&manifest::resolve_root(dir)?),
         Verb::Doctor { dir } => doctor(&manifest::resolve_root(dir)?),
+        Verb::Status {
+            dir,
+            json,
+            exit_code,
+        } => status(&manifest::resolve_root(dir)?, json, exit_code),
+        Verb::Sync { dir: _ } => Ok(not_implemented("sync")),
+        Verb::Adopt { path: _ } => Ok(not_implemented("adopt")),
     }
+}
+
+fn status(root: &Path, json: bool, exit_code: bool) -> Result<bool> {
+    let report = status::build(root)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render_human());
+    }
+    Ok(!exit_code || !report.has_findings())
+}
+
+fn not_implemented(verb: &str) -> bool {
+    eprintln!("aw: {verb} is not implemented");
+    false
 }
 
 fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> Result<()> {
