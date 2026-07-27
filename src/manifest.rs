@@ -6,10 +6,15 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 pub const FILENAME: &str = "workspace.toml";
 pub const WORKSPACE_NAME_PLACEHOLDER: &str = "CHANGEME";
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -112,6 +117,7 @@ impl SkillFilter<'_> {
 impl Manifest {
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join(FILENAME);
+        regular_file_metadata(&path)?;
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading manifest {}", path.display()))?;
         let manifest: Self = toml::from_str(&text)
@@ -251,6 +257,148 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
     Ok(parsed)
 }
 
+/// Resolve a checkout and express it as a portable workspace-relative path.
+pub fn canonicalise_member(root: &Path, path: &Path) -> Result<(PathBuf, String)> {
+    let root = std::fs::canonicalize(root)
+        .with_context(|| format!("resolving workspace root {}", root.display()))?;
+    let checkout = std::fs::canonicalize(path)
+        .with_context(|| format!("resolving checkout {}", path.display()))?;
+    let relative = checkout
+        .strip_prefix(&root)
+        .with_context(|| {
+            format!(
+                "checkout {} is outside the workspace {}",
+                checkout.display(),
+                root.display()
+            )
+        })?
+        .to_str()
+        .with_context(|| {
+            format!(
+                "checkout path {} cannot be represented in the manifest as UTF-8",
+                checkout.display()
+            )
+        })?
+        .to_owned();
+    check_contained(&relative)?;
+    Ok((checkout, relative))
+}
+
+/// Append one repository without reserialising the human-edited manifest.
+pub fn append_repo(root: &Path, repo: &Repo) -> Result<()> {
+    let path = root.join(FILENAME);
+    let metadata = regular_file_metadata(&path)?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut document: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing manifest {}", path.display()))?;
+
+    let repos = document
+        .entry("repo")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+        .as_array_of_tables_mut()
+        .with_context(|| format!("manifest {} has a non-array repo entry", path.display()))?;
+    let mut table = Table::new();
+    table.insert("path", value(&repo.path));
+    table.insert("url", value(&repo.url));
+    if let Some(branch) = &repo.branch {
+        table.insert("branch", value(branch));
+    }
+    repos.push(table);
+
+    replace_atomically(&path, document.to_string().as_bytes(), &metadata)
+}
+
+fn replace_atomically(path: &Path, contents: &[u8], metadata: &Metadata) -> Result<()> {
+    replace_atomically_with(path, contents, metadata, |_| Ok(()))
+}
+
+fn replace_atomically_with(
+    path: &Path,
+    contents: &[u8],
+    metadata: &Metadata,
+    before_rename: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let (temporary, mut file) = create_temporary_file(path)?;
+    let result = (|| -> Result<()> {
+        file.set_permissions(metadata.permissions())
+            .with_context(|| format!("setting permissions on {}", temporary.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("writing temporary manifest {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing temporary manifest {}", temporary.display()))?;
+        drop(file);
+        before_rename(&temporary)?;
+        std::fs::rename(&temporary, path).with_context(|| {
+            format!(
+                "replacing manifest {} with {}",
+                path.display(),
+                temporary.display()
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn create_temporary_file(path: &Path) -> Result<(PathBuf, File)> {
+    for _ in 0..100 {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_file_name(format!(
+            ".{FILENAME}.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("creating temporary manifest {}", temporary.display())
+                });
+            }
+        }
+    }
+    anyhow::bail!(
+        "could not create a unique temporary manifest beside {}",
+        path.display()
+    )
+}
+
+fn regular_file_metadata(path: &Path) -> Result<Metadata> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("reading metadata for {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "{} must be a regular file",
+        path.display()
+    );
+    Ok(metadata)
+}
+
+fn manifest_marker(dir: &Path) -> Result<bool> {
+    let path = dir.join(FILENAME);
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.file_type().is_file(),
+                "{} must be a regular file",
+                path.display()
+            );
+            Ok(true)
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("reading metadata for {}", path.display())),
+    }
+}
+
 /// A workspace contains everything it manages. A checkout that escapes the root
 /// makes the workspace non-portable and behaves differently depending on who
 /// runs the bootstrap — it works in a terminal and fails under a sandboxed
@@ -281,7 +429,7 @@ pub fn resolve_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
         let dir =
             std::fs::canonicalize(&dir).with_context(|| format!("resolving {}", dir.display()))?;
         anyhow::ensure!(
-            dir.join(FILENAME).is_file(),
+            manifest_marker(&dir)?,
             "{} is not a workspace: no {FILENAME}",
             dir.display()
         );
@@ -290,7 +438,7 @@ pub fn resolve_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
 
     let mut dir = std::env::current_dir().context("resolving current directory")?;
     loop {
-        if dir.join(FILENAME).is_file() {
+        if manifest_marker(&dir)? {
             return Ok(dir);
         }
         anyhow::ensure!(
@@ -319,6 +467,40 @@ mod tests {
     fn rejects_an_absolute_path() {
         let err = check_contained("/srv/skills").expect_err("is outside the workspace");
         assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn failed_atomic_replacement_preserves_the_manifest() {
+        let root = std::env::current_dir()
+            .expect("current directory")
+            .join("tmp")
+            .join(format!(
+                "manifest-atomic-{}-{}",
+                std::process::id(),
+                TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&root).expect("create test directory");
+        let path = root.join(FILENAME);
+        std::fs::write(&path, "original\n").expect("write original manifest");
+        let metadata = regular_file_metadata(&path).expect("read original metadata");
+
+        let err = replace_atomically_with(&path, b"replacement\n", &metadata, |_| {
+            anyhow::bail!("injected failure before rename")
+        })
+        .expect_err("replacement fails");
+
+        assert!(err.to_string().contains("injected failure"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read preserved manifest"),
+            "original\n"
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("read test directory")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&root).expect("remove test directory");
     }
 
     #[test]

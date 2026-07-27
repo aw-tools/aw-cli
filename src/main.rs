@@ -4,6 +4,7 @@
 //! A thin orchestrator. Cloning and per-repository git configuration are
 //! garden's job; `aw` owns the manifest, skill linking, and reporting.
 
+mod adopt;
 mod garden;
 mod git;
 mod manifest;
@@ -103,7 +104,7 @@ fn run() -> Result<bool> {
             exit_code,
         } => status(&manifest::resolve_root(dir)?, json, exit_code),
         Verb::Sync { dir: _ } => Ok(not_implemented("sync")),
-        Verb::Adopt { path: _ } => Ok(not_implemented("adopt")),
+        Verb::Adopt { path } => adopt::run(&path).map(|()| true),
     }
 }
 

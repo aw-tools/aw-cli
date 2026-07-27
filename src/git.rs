@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -516,6 +516,34 @@ pub fn version() -> Result<String> {
         .context("running `git --version`")?;
     anyhow::ensure!(out.status.success(), "`git --version` failed");
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+pub fn checked_out_branch(dir: &Path) -> Result<String> {
+    run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|branch| branch.trim().to_owned())
+}
+
+pub fn worktree_root(dir: &Path) -> Result<PathBuf> {
+    resolved_git_path(dir, "--show-toplevel", "git worktree root")
+}
+
+pub fn per_worktree_git_dir(dir: &Path) -> Result<PathBuf> {
+    resolved_git_path(dir, "--git-dir", "per-worktree git directory")
+}
+
+pub fn common_git_dir(dir: &Path) -> Result<PathBuf> {
+    resolved_git_path(dir, "--git-common-dir", "common git directory")
+}
+
+fn resolved_git_path(dir: &Path, option: &str, description: &str) -> Result<PathBuf> {
+    let output = run(dir, &["rev-parse", "--path-format=absolute", option])?;
+    let path = PathBuf::from(output.trim());
+    anyhow::ensure!(
+        !path.as_os_str().is_empty(),
+        "`git rev-parse {option}` returned an empty {description} in {}",
+        dir.display()
+    );
+    std::fs::canonicalize(&path)
+        .with_context(|| format!("resolving {description} {}", path.display()))
 }
 
 fn run(dir: &Path, args: &[&str]) -> Result<String> {
