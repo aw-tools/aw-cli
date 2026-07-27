@@ -7,6 +7,7 @@
 mod garden;
 mod git;
 mod manifest;
+mod reporting;
 mod skills;
 mod template;
 
@@ -105,10 +106,10 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     )?;
 
     if git::is_repo(&root) {
-        println!("repo      already a git repository");
+        println!("{}", reporting::init_existing_repo());
     } else {
         git::init(&root)?;
-        println!("repo      git init");
+        println!("{}", reporting::init_new_repo());
     }
 
     for (key, value) in garden::identity_pairs(manifest.identity.as_ref()) {
@@ -116,23 +117,25 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     }
 
     println!(
-        "source    {}@{} ({})",
-        source.url,
-        source.reference.as_deref().unwrap_or(""),
-        prepared.sha
+        "{}",
+        reporting::init_source(
+            &source.url,
+            source.reference.as_deref().unwrap_or(""),
+            &prepared.sha
+        )
     );
     if created.is_empty() {
-        println!("template  no changes — every file already present");
+        println!("{}", reporting::init_unchanged_template());
     } else {
         for path in &created {
-            println!("template  + {path}");
+            println!("{}", reporting::init_created_template_path(path));
         }
     }
-    println!("name      {name}");
+    println!("{}", reporting::init_name(&name));
 
     eprintln!();
-    eprintln!("Next: edit workspace.toml, then run bin/bootstrap.");
-    eprintln!("No commit was made — review `git status` first.");
+    eprintln!("{}", reporting::init_next_step());
+    eprintln!("{}", reporting::init_no_commit());
     Ok(())
 }
 
@@ -183,30 +186,23 @@ fn set_workspace_name(root: &Path, name: &str) -> Result<()> {
 /// script or agent driving `aw` does not read it as a clean run.
 fn bootstrap(root: &Path) -> Result<bool> {
     let manifest = Manifest::load(root)?;
-    println!("workspace {}", manifest.workspace.name);
+    println!(
+        "{}",
+        reporting::bootstrap_workspace(&manifest.workspace.name)
+    );
 
     // Phase 1 — repositories.
     let regenerated = garden::write_trees(root, &manifest)?;
     println!(
-        "trees     {} ({} entries)",
-        if regenerated {
-            "regenerated"
-        } else {
-            "unchanged"
-        },
-        manifest.repos.len()
+        "{}",
+        reporting::bootstrap_trees(regenerated, manifest.repos.len())
     );
     garden::grow(root, &manifest)?;
     for repo in &manifest.repos {
         let path = garden::checkout_path(root, &repo.path);
         println!(
-            "repo      {:<24} {}",
-            repo.path,
-            if git::is_repo(&path) {
-                "present"
-            } else {
-                "MISSING"
-            }
+            "{}",
+            reporting::bootstrap_repo(&repo.path, git::is_repo(&path))
         );
     }
 
@@ -219,34 +215,28 @@ fn bootstrap(root: &Path) -> Result<bool> {
             changed += 1;
         }
     }
-    println!(
-        "config    workspace repo: {} of {} keys updated",
-        changed,
-        pairs.len()
-    );
+    println!("{}", reporting::bootstrap_config(changed, pairs.len()));
     if root.join(HOOKS_DIR).is_dir() {
         let changed = git::set_config_if_unset(root, HOOKS_CONFIG_KEY, HOOKS_DIR)?;
         let value = git::config_value(root, HOOKS_CONFIG_KEY)?.unwrap_or_default();
-        println!(
-            "hooks     {HOOKS_CONFIG_KEY} {} {value}",
-            if changed { "set to" } else { "unchanged at" }
-        );
+        println!("{}", reporting::bootstrap_hooks(changed, &value));
     }
 
     // Phase 3 — skills.
     let resolution = skills::resolve(root, &manifest)?;
     for (harness, changed) in skills::link(root, &resolution)? {
-        println!("skills    {harness:<12} {changed} link(s) changed");
+        println!("{}", reporting::bootstrap_skills(harness, changed));
     }
     for skill in &resolution.linked {
-        println!("skill     {:<24} {}", skill.name, skill.origin.label());
+        println!(
+            "{}",
+            reporting::bootstrap_skill(&skill.name, skill.origin.label())
+        );
     }
     for (loser, winner) in &resolution.shadowed {
         println!(
-            "shadowed  {:<24} {} shadowed by {}",
-            loser.name,
-            loser.origin.label(),
-            winner.label()
+            "{}",
+            reporting::bootstrap_shadowed(&loser.name, loser.origin.label(), winner.label())
         );
     }
 
@@ -257,30 +247,30 @@ fn bootstrap(root: &Path) -> Result<bool> {
         .filter(|r| !git::is_repo(&garden::checkout_path(root, &r.path)))
         .count();
     println!(
-        "verify    {} repo(s), {} missing, {} skill(s) linked, {} shadowed",
-        manifest.repos.len(),
-        missing,
-        resolution.linked.len(),
-        resolution.shadowed.len()
+        "{}",
+        reporting::bootstrap_verify(
+            manifest.repos.len(),
+            missing,
+            resolution.linked.len(),
+            resolution.shadowed.len()
+        )
     );
     Ok(missing == 0)
 }
 
 fn doctor(root: &Path) -> Result<bool> {
     let mut ok = true;
-    let mut check = |pass: bool, label: &str, detail: &str, remedy: &str| {
-        if pass {
-            println!("PASS  {label:<22} {detail}");
-        } else {
-            println!("FAIL  {label:<22} {detail}");
-            println!("      {:<22} remedy: {remedy}", "");
+    let mut check = |pass: bool, report: reporting::DoctorCheck| {
+        println!("{}", reporting::doctor_check(pass, &report));
+        if !pass {
+            println!("{}", reporting::doctor_remedy(&report));
             ok = false;
         }
     };
 
     match git::version() {
-        Ok(v) => check(true, "git", &v, ""),
-        Err(e) => check(false, "git", &format!("{e:#}"), "install git"),
+        Ok(v) => check(true, reporting::doctor_git(&v)),
+        Err(e) => check(false, reporting::doctor_git_error(&e)),
     }
 
     match garden::version() {
@@ -289,21 +279,14 @@ fn doctor(root: &Path) -> Result<bool> {
             let recent = (major, minor) >= (want_major, want_minor);
             check(
                 recent,
-                "garden",
-                &format!("{major}.{minor} (minimum {want_major}.{want_minor})"),
-                "brew upgrade garden",
+                reporting::doctor_garden(major, minor, want_major, want_minor),
             );
         }
-        Err(e) => check(false, "garden", &format!("{e:#}"), "brew install garden"),
+        Err(e) => check(false, reporting::doctor_garden_error(&e)),
     }
 
     let config = root.join(garden::CONFIG_FILE);
-    check(
-        config.is_file(),
-        "garden.yaml",
-        &config.display().to_string(),
-        "run `aw init` in this directory to restore it",
-    );
+    check(config.is_file(), reporting::doctor_garden_config(&config));
 
     // A garden config whose include is missing resolves to zero trees and
     // exits successfully, so an absent generated file is silent at the garden
@@ -311,68 +294,51 @@ fn doctor(root: &Path) -> Result<bool> {
     let generated = root.join(garden::GENERATED_FILE);
     check(
         generated.is_file(),
-        "generated trees",
-        &generated.display().to_string(),
-        "run `aw bootstrap`",
+        reporting::doctor_generated_trees(&generated),
     );
 
     if root.join(HOOKS_DIR).is_dir() {
         let configured = git::config_value(root, HOOKS_CONFIG_KEY)?;
-        let detail = match configured.as_deref() {
-            Some(value) => format!("{HOOKS_CONFIG_KEY} = {value}"),
-            None => format!("{HOOKS_CONFIG_KEY} is unset"),
-        };
-        let remedy = if configured.is_some() {
-            "unset core.hooksPath, then run `aw bootstrap`"
-        } else {
-            "run `aw bootstrap`"
-        };
         let pass = configured.as_deref() == Some(HOOKS_DIR);
-        check(pass, "pre-commit hook", &detail, remedy);
+        check(
+            pass,
+            reporting::doctor_pre_commit_hook(configured.as_deref()),
+        );
     }
 
     let manifest = Manifest::load(root)?;
     for repo in &manifest.repos {
-        let (pass, detail, remedy) = match git::probe_remote(&repo.url) {
-            git::RemoteProbe::Reachable => (true, "reachable".to_owned(), ""),
-            git::RemoteProbe::Denied(why) => (
-                false,
-                format!("access denied — {why}"),
-                "check credentials for this host",
-            ),
-            git::RemoteProbe::Unreachable(why) => (
-                false,
-                format!("unreachable — {why}"),
-                "check the URL and network",
-            ),
-        };
-        check(
-            pass,
-            "remote",
-            &format!("{:<24} {detail}", repo.path),
-            remedy,
-        );
+        match git::probe_remote(&repo.url) {
+            git::RemoteProbe::Reachable => {
+                check(true, reporting::doctor_remote_reachable(&repo.path));
+            }
+            git::RemoteProbe::Denied(why) => {
+                check(false, reporting::doctor_remote_denied(&repo.path, &why));
+            }
+            git::RemoteProbe::Unreachable(why) => {
+                check(
+                    false,
+                    reporting::doctor_remote_unreachable(&repo.path, &why),
+                );
+            }
+        }
     }
 
     for harness in skills::HARNESSES {
         let dir = root.join(harness.dir);
         check(
             dir.is_dir(),
-            "discovery dir",
-            &format!("{:<12} {}", harness.name, dir.display()),
-            "run `aw bootstrap`",
+            reporting::doctor_discovery_dir(harness.name, &dir),
         );
     }
 
     let dangling = skills::dangling(root)?;
     check(
         dangling.is_empty(),
-        "skill links",
-        &format!("{} dangling", dangling.len()),
-        "run `aw bootstrap` to re-link, or remove the stale entry",
+        reporting::doctor_skill_links(dangling.len()),
     );
     for path in &dangling {
-        println!("      {:<22} {}", "", path.display());
+        println!("{}", reporting::doctor_dangling_link(path));
     }
 
     Ok(ok)
