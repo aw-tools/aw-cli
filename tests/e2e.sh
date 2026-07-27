@@ -37,6 +37,8 @@ cat >"$WORK/seed-template/.gitignore" <<'EOF'
 !garden.yaml
 !README.md
 !.editorconfig
+!.githooks/
+!.githooks/**
 !conflicting-source.txt
 !.seedignore
 !CONTRACT.md
@@ -60,6 +62,12 @@ garden:
 EOF
 echo 'template readme' >"$WORK/seed-template/README.md"
 echo 'root = true' >"$WORK/seed-template/.editorconfig"
+mkdir -p "$WORK/seed-template/.githooks"
+cat >"$WORK/seed-template/.githooks/pre-commit" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$WORK/seed-template/.githooks/pre-commit"
 echo '#!/bin/sh' >"$WORK/seed-template/bin/bootstrap"
 chmod +x "$WORK/seed-template/bin/bootstrap"
 echo 'name: template-ci' >"$WORK/seed-template/.github/workflows/ci.yml"
@@ -293,6 +301,10 @@ assert "identity applied to member repo" \
 	"$(git -C "$WORK/demo.workspace/alpha" config --local user.email)" template@example.com
 assert "identity applied to workspace repo" \
 	"$(git -C "$WORK/demo.workspace" config --local user.email)" template@example.com
+assert "bootstrap activates the workspace hook" \
+	"$(git -C "$WORK/demo.workspace" config --local core.hooksPath 2>/dev/null || true)" .githooks
+assert "bootstrap reports workspace hook activation" \
+	"$(grep -c 'hooks.*core\.hooksPath.*\.githooks' "$WORK/boot1.log")" 1
 assert "branch honoured" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse --abbrev-ref HEAD)" main
 
@@ -365,6 +377,43 @@ assert "nothing was cloned outside the workspace" \
 "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor.log" 2>&1 ||
 	{ cat "$WORK/doctor.log"; fail "doctor exits non-zero on a healthy workspace"; }
 assert "doctor reports no failures" "$(grep -c '^FAIL' "$WORK/doctor.log")" 0
+assert "doctor passes the workspace hook check" \
+	"$(grep -c '^PASS  pre-commit hook.*core\.hooksPath = \.githooks' "$WORK/doctor.log")" 1
+
+git -C "$WORK/working-tree.workspace" config --local core.hooksPath .other
+"$AW" bootstrap "$WORK/working-tree.workspace" >"$WORK/custom-hook-bootstrap.log" 2>&1
+assert "bootstrap preserves a custom workspace hook path" \
+	"$(git -C "$WORK/working-tree.workspace" config --local core.hooksPath)" .other
+assert "bootstrap reports the custom workspace hook path unchanged" \
+	"$(grep -c 'hooks.*core\.hooksPath.*unchanged.*\.other' \
+		"$WORK/custom-hook-bootstrap.log")" 1
+if "$AW" doctor "$WORK/working-tree.workspace" >"$WORK/custom-hook-doctor.log" 2>&1; then
+	fail "doctor fails when the workspace hook path is wrong"
+else
+	pass "doctor fails when the workspace hook path is wrong"
+fi
+assert "doctor reports the missing workspace hook" \
+	"$(grep -c '^FAIL  pre-commit hook' "$WORK/custom-hook-doctor.log")" 1
+assert "doctor gives an actionable workspace hook remedy" \
+	"$(grep -c 'unset core\.hooksPath, then run `aw bootstrap`' \
+		"$WORK/custom-hook-doctor.log")" 1
+
+git -C "$WORK/working-tree.workspace" config --local core.hooksPath '.githooks '
+if "$AW" doctor "$WORK/working-tree.workspace" >"$WORK/spaced-hook-doctor.log" 2>&1; then
+	fail "doctor rejects a hook path with semantic trailing whitespace"
+else
+	pass "doctor rejects a hook path with semantic trailing whitespace"
+fi
+assert "doctor preserves semantic hook-path whitespace in its report" \
+	"$(grep -c 'core\.hooksPath = \.githooks $' "$WORK/spaced-hook-doctor.log")" 1
+
+rm -rf "$WORK/branch.workspace/.githooks"
+"$AW" bootstrap "$WORK/branch.workspace" >"$WORK/no-hook-bootstrap.log" 2>&1
+assert "bootstrap skips hook activation when the template has no hook" \
+	"$(grep -c '^hooks ' "$WORK/no-hook-bootstrap.log")" 0
+"$AW" doctor "$WORK/branch.workspace" >"$WORK/no-hook-doctor.log" 2>&1
+assert "doctor skips the hook check when the template has no hook" \
+	"$(grep -c 'pre-commit hook' "$WORK/no-hook-doctor.log")" 0
 
 ln -s ../../nowhere "$WORK/demo.workspace/.claude/skills/broken"
 "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor2.log" 2>&1 || true
