@@ -936,20 +936,33 @@ cat >>"$WORK/status-drift.workspace/workspace.toml" <<EOF
 [[repo]]
 path = "alpha"
 url = "$WORK/origins/alpha.git"
+
+[[repo]]
+path = "./relative"
+url = "$WORK/origins/beta.git"
 EOF
 "$AW" bootstrap "$WORK/status-drift.workspace" >/dev/null 2>&1
 git -C "$WORK/status-drift.workspace" config --local core.hooksPath .custom-hooks
 git init -q --initial-branch=main "$WORK/status-drift.workspace/unlisted"
 mkdir -p "$WORK/status-drift.workspace/vendor"
 git init -q --initial-branch=main "$WORK/status-drift.workspace/vendor/beta"
+ln -s "$WORK/status-drift.workspace/absent-target" \
+	"$WORK/status-drift.workspace/dangling"
 
-"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-unlisted.log"
+if "$AW" status "$WORK/status-drift.workspace" >"$WORK/status-unlisted.log"; then
+	pass "status ignores a dangling immediate-child symlink"
+else
+	fail "status ignores a dangling immediate-child symlink"
+fi
 assert "status reports an unlisted immediate-child checkout" \
 	"$(grep -c '^unlisted[[:space:]]*present, not declared$' \
 		"$WORK/status-unlisted.log")" 1
 assert "status excludes declared members from unlisted checkouts" \
 	"$(sed -n '/^unlisted checkouts$/,$p' "$WORK/status-unlisted.log" |
 		grep -c '^alpha[[:space:]]' || true)" 0
+assert "status normalises a declared checkout path" \
+	"$(sed -n '/^unlisted checkouts$/,$p' "$WORK/status-unlisted.log" |
+		grep -c '^relative[[:space:]]' || true)" 0
 assert "status ignores a nested unlisted checkout" \
 	"$(grep -c '^vendor/beta[[:space:]]' "$WORK/status-unlisted.log" || true)" 0
 assert "status preserves a user-set workspace hook path" \
@@ -981,11 +994,21 @@ assert "status JSON marks configuration drift as a finding" \
 		grep -c '"finding": true')" 1
 assert "status JSON names the drifted config key" \
 	"$(grep -c '"user.email"' "$WORK/status-drift.json")" 1
+assert "status JSON associates the drifted repository and key" \
+	"$(awk '
+		/"name": "configuration_drift"/ { section = 1; next }
+		section && /"name":/ { section = 0 }
+		section && /"repository": "alpha"/ { repository = 1 }
+		section && /"user.email"/ { key = 1 }
+		END { print (repository && key) + 0 }' "$WORK/status-drift.json")" 1
 assert "status JSON includes the unlisted-checkouts section" \
 	"$(grep -c '"name": "unlisted_checkouts"' "$WORK/status-drift.json")" 1
 assert "status JSON does not classify an unlisted checkout as a finding" \
 	"$(grep -A2 '"name": "unlisted_checkouts"' "$WORK/status-drift.json" |
 		grep -c '"finding": false')" 1
+assert "status JSON names the unlisted checkout path" \
+	"$(sed -n '/\"name\": \"unlisted_checkouts\"/,$p' \
+		"$WORK/status-drift.json" | grep -c '"path": "unlisted"')" 1
 if "$AW" status --exit-code "$WORK/status-drift.workspace" >/dev/null; then
 	fail "status --exit-code fails for config drift"
 else
@@ -1000,8 +1023,11 @@ git -C "$WORK/status-drift.workspace/alpha" \
 assert "status reports member origin drift" \
 	"$(grep -c '^alpha[[:space:]]*remote\.origin\.url$' \
 		"$WORK/status-origin-drift.log")" 1
-git -C "$WORK/status-drift.workspace/alpha" \
-	config --local remote.origin.url "$WORK/origins/alpha.git"
+"$AW" bootstrap "$WORK/status-drift.workspace" >/dev/null 2>&1
+"$AW" status "$WORK/status-drift.workspace" >"$WORK/status-origin-converged.log"
+assert "bootstrap converges member origin drift" \
+	"$(grep -c '^alpha[[:space:]]*remote\.origin\.url$' \
+		"$WORK/status-origin-converged.log" || true)" 0
 git -C "$WORK/status-drift.workspace" config --local --unset core.hooksPath
 "$AW" status "$WORK/status-drift.workspace" >"$WORK/status-hooks-drift.log"
 assert "status reports an unset managed workspace hook" \

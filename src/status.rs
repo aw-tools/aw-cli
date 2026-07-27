@@ -477,24 +477,25 @@ impl UnlistedCheckoutsSection {
         let members = manifest
             .repos
             .iter()
-            .map(|repository| PathBuf::from(&repository.path))
+            .map(|repository| garden::checkout_path(root, &repository.path))
             .collect::<BTreeSet<_>>();
         let mut paths = Vec::new();
 
         for entry in std::fs::read_dir(root)
             .with_context(|| format!("reading workspace root {}", root.display()))?
         {
-            let entry =
-                entry.with_context(|| format!("reading workspace root {}", root.display()))?;
-            let relative = PathBuf::from(entry.file_name());
-            if entry
-                .metadata()
-                .with_context(|| format!("inspecting workspace child {}", entry.path().display()))?
-                .is_dir()
-                && !members.contains(&relative)
-                && git::is_repo_checked(&entry.path())?
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir()
+                && !members.contains(&path)
+                && git::is_repo_checked(&path).unwrap_or(false)
             {
-                paths.push(relative.to_string_lossy().into_owned());
+                paths.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
         paths.sort();
