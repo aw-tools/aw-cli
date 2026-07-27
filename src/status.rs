@@ -12,7 +12,8 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +48,7 @@ enum ReportedWorkingTree {
 struct RepositoryState {
     name: String,
     kind: RepositoryKind,
+    path: PathBuf,
     state: CheckoutState,
 }
 
@@ -244,14 +246,161 @@ impl ReportSection for WorkingTreeSection {
     }
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MeasurementAge {
+    Fetched { timestamp: u64 },
+    Cloned { timestamp: u64 },
+    Unknown,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum AheadBehind {
+    Measured {
+        ahead: u64,
+        behind: u64,
+        as_of: MeasurementAge,
+    },
+    NoUpstream,
+}
+
+struct AheadBehindEntry {
+    repository: String,
+    kind: RepositoryKind,
+    measurement: AheadBehind,
+}
+
+struct AheadBehindSection {
+    entries: Vec<AheadBehindEntry>,
+}
+
+impl AheadBehindSection {
+    fn inspect(repositories: &[RepositoryState]) -> Result<Self> {
+        let mut entries = Vec::new();
+        for repository in repositories {
+            if matches!(repository.state, CheckoutState::Absent) {
+                continue;
+            }
+            let measurement = match git::upstream_comparison(&repository.path)? {
+                Some(comparison) => {
+                    let as_of = if let Some(timestamp) =
+                        git::newest_remote_reflog_timestamp(&repository.path, &comparison.upstream)?
+                    {
+                        MeasurementAge::Fetched { timestamp }
+                    } else if let Some(timestamp) = git::clone_reflog_timestamp(&repository.path)? {
+                        MeasurementAge::Cloned { timestamp }
+                    } else {
+                        MeasurementAge::Unknown
+                    };
+                    AheadBehind::Measured {
+                        ahead: comparison.ahead,
+                        behind: comparison.behind,
+                        as_of,
+                    }
+                }
+                None => AheadBehind::NoUpstream,
+            };
+            entries.push(AheadBehindEntry {
+                repository: repository.name.clone(),
+                kind: repository.kind,
+                measurement,
+            });
+        }
+        Ok(Self { entries })
+    }
+}
+
+impl ReportSection for AheadBehindSection {
+    fn name(&self) -> &'static str {
+        "ahead_behind"
+    }
+
+    fn has_finding(&self) -> bool {
+        false
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("ahead/behind\n");
+        for entry in &self.entries {
+            let measurement = match entry.measurement {
+                AheadBehind::Measured {
+                    ahead,
+                    behind,
+                    as_of,
+                } => format!(
+                    "ahead {ahead}, behind {behind} ({})",
+                    render_measurement_age(as_of)
+                ),
+                AheadBehind::NoUpstream => "no upstream".to_owned(),
+            };
+            writeln!(output, "{:<24} {measurement}", entry.repository)
+                .expect("writing to a string cannot fail");
+        }
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            repository: &'a str,
+            kind: RepositoryKind,
+            measurement: AheadBehind,
+        }
+
+        serde_json::to_value(
+            self.entries
+                .iter()
+                .map(|entry| Entry {
+                    repository: &entry.repository,
+                    kind: entry.kind,
+                    measurement: entry.measurement,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("ahead-behind entries always serialise")
+    }
+}
+
+fn render_measurement_age(age: MeasurementAge) -> String {
+    match age {
+        MeasurementAge::Fetched { timestamp } => {
+            format!("fetched {} ago", elapsed_age(timestamp))
+        }
+        MeasurementAge::Cloned { timestamp } => {
+            format!("cloned {} ago", elapsed_age(timestamp))
+        }
+        MeasurementAge::Unknown => "age unknown; run `aw sync` to refresh".to_owned(),
+    }
+}
+
+fn elapsed_age(timestamp: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    format_elapsed(now.saturating_sub(timestamp))
+}
+
+fn format_elapsed(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3_599 => format!("{}m", seconds / 60),
+        3_600..=86_399 => format!("{}h", seconds / 3_600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 pub fn build(root: &Path) -> Result<StatusReport> {
     let manifest = Manifest::load(root)?;
     let repositories = inspect_repositories(root, &manifest)?;
+    let ahead_behind = AheadBehindSection::inspect(&repositories)?;
     let mut report = StatusReport::new(manifest.workspace.name);
     report.add_section(PresenceSection {
         repositories: repositories.clone(),
     });
-    report.add_section(WorkingTreeSection { repositories });
+    report.add_section(WorkingTreeSection {
+        repositories: repositories.clone(),
+    });
+    report.add_section(ahead_behind);
     Ok(report)
 }
 
@@ -284,5 +433,25 @@ fn inspect_repository(name: String, kind: RepositoryKind, path: &Path) -> Result
     } else {
         CheckoutState::Absent
     };
-    Ok(RepositoryState { name, kind, state })
+    Ok(RepositoryState {
+        name,
+        kind,
+        path: path.to_owned(),
+        state,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_elapsed;
+
+    #[test]
+    fn elapsed_age_uses_compact_unit_boundaries() {
+        assert_eq!(format_elapsed(59), "59s");
+        assert_eq!(format_elapsed(60), "1m");
+        assert_eq!(format_elapsed(3_599), "59m");
+        assert_eq!(format_elapsed(3_600), "1h");
+        assert_eq!(format_elapsed(86_399), "23h");
+        assert_eq!(format_elapsed(86_400), "1d");
+    }
 }
