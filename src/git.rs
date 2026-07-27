@@ -232,6 +232,37 @@ pub fn set_config(dir: &Path, key: &str, value: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Return a repository-local configuration value, or `None` when it is unset.
+pub fn config_value(dir: &Path, key: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "--null", "--local", "--get", "--", key])
+        .output()
+        .with_context(|| format!("reading local git config {key}"))?;
+    if output.status.success() {
+        let value = String::from_utf8_lossy(&output.stdout);
+        return Ok(Some(value.strip_suffix('\0').unwrap_or(&value).to_owned()));
+    }
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    anyhow::bail!(
+        "reading local git config {key} failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+}
+
+/// Set a repository-local configuration value only when the key is unset.
+pub fn set_config_if_unset(dir: &Path, key: &str, value: &str) -> Result<bool> {
+    if config_value(dir, key)?.is_some() {
+        return Ok(false);
+    }
+    run(dir, &["config", "--local", "--", key, value])?;
+    Ok(true)
+}
+
 /// Whether a remote is reachable, distinguishing authentication failures from
 /// everything else so `aw doctor` can suggest the right remedy.
 pub fn probe_remote(url: &str) -> RemoteProbe {

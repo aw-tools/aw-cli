@@ -16,6 +16,9 @@ use manifest::Manifest;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+const HOOKS_DIR: &str = ".githooks";
+const HOOKS_CONFIG_KEY: &str = "core.hooksPath";
+
 #[derive(Parser)]
 #[command(name = "aw", version, about, long_about = None)]
 struct Cli {
@@ -221,6 +224,14 @@ fn bootstrap(root: &Path) -> Result<bool> {
         changed,
         pairs.len()
     );
+    if root.join(HOOKS_DIR).is_dir() {
+        let changed = git::set_config_if_unset(root, HOOKS_CONFIG_KEY, HOOKS_DIR)?;
+        let value = git::config_value(root, HOOKS_CONFIG_KEY)?.unwrap_or_default();
+        println!(
+            "hooks     {HOOKS_CONFIG_KEY} {} {value}",
+            if changed { "set to" } else { "unchanged at" }
+        );
+    }
 
     // Phase 3 — skills.
     let resolution = skills::resolve(root, &manifest)?;
@@ -304,6 +315,21 @@ fn doctor(root: &Path) -> Result<bool> {
         &generated.display().to_string(),
         "run `aw bootstrap`",
     );
+
+    if root.join(HOOKS_DIR).is_dir() {
+        let configured = git::config_value(root, HOOKS_CONFIG_KEY)?;
+        let detail = match configured.as_deref() {
+            Some(value) => format!("{HOOKS_CONFIG_KEY} = {value}"),
+            None => format!("{HOOKS_CONFIG_KEY} is unset"),
+        };
+        let remedy = if configured.is_some() {
+            "unset core.hooksPath, then run `aw bootstrap`"
+        } else {
+            "run `aw bootstrap`"
+        };
+        let pass = configured.as_deref() == Some(HOOKS_DIR);
+        check(pass, "pre-commit hook", &detail, remedy);
+    }
 
     let manifest = Manifest::load(root)?;
     for repo in &manifest.repos {
