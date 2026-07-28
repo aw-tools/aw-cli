@@ -486,7 +486,10 @@ pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
     Ok(FetchOutcome::Failed(detail))
 }
 
-/// Whether a remote is reachable, distinguishing authentication failures from
+/// Whether a remote is reachable. When `branch` is set, probes that branch's
+/// ref (`refs/heads/<branch>`), so a member pinned to a non-default branch is
+/// checked against the ref it actually uses rather than the remote's `HEAD`;
+/// otherwise probes `HEAD`. Distinguishes authentication failures from
 /// everything else so `aw doctor` can suggest the right remedy.
 pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
     let reference = branch.map_or_else(|| "HEAD".to_owned(), |name| format!("refs/heads/{name}"));
