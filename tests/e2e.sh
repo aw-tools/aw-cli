@@ -1201,6 +1201,74 @@ else
 fi
 }
 
+# --- read-only invariant ------------------------------------------------------
+case_readonly_invariant() {
+prepare_demo_workspace
+"$AW" bootstrap "$WORK/demo.workspace" >/dev/null 2>&1
+
+# Skills stays clean. Beta has tracked and untracked changes. Gamma's isolated
+# origin advances after the clone. Alpha's origin cannot be reached.
+echo "dirty local" >>"$WORK/demo.workspace/beta/file.txt"
+echo "untracked local" >"$WORK/demo.workspace/beta/untracked.txt"
+
+git clone -q --bare "$WORK/origins/gamma.git" "$WORK/gamma-readonly.git"
+git -C "$WORK/demo.workspace/gamma" remote set-url origin \
+	"$WORK/gamma-readonly.git"
+git clone -q "$WORK/gamma-readonly.git" "$WORK/gamma-upstream"
+echo "gamma remote update" >>"$WORK/gamma-upstream/file.txt"
+git -C "$WORK/gamma-upstream" add file.txt
+git -C "$WORK/gamma-upstream" -c user.name=t -c user.email=t@t \
+	commit -qm "remote update"
+git -C "$WORK/gamma-upstream" push -q origin HEAD:main
+
+git -C "$WORK/demo.workspace/alpha" remote set-url origin \
+	"$WORK/unreachable.git"
+
+assert "read-only invariant fixture includes a clean member" \
+	"$(git -C "$WORK/demo.workspace/skills" status --porcelain | wc -l | tr -d ' ')" 0
+assert "read-only invariant fixture includes tracked and untracked changes" \
+	"$(git -C "$WORK/demo.workspace/beta" status --porcelain |
+		grep -Ec '^ M file\.txt$|^\?\? untracked\.txt$')" 2
+if [ "$(git -C "$WORK/gamma-readonly.git" rev-parse main)" != \
+	"$(git -C "$WORK/demo.workspace/gamma" rev-parse HEAD)" ]; then
+	pass "read-only invariant fixture includes a remote-ahead member"
+else
+	fail "read-only invariant fixture includes a remote-ahead member"
+fi
+
+for name in alpha beta gamma skills; do
+	git -C "$WORK/demo.workspace/$name" rev-parse HEAD \
+		>"$WORK/$name.head.before"
+	git -C "$WORK/demo.workspace/$name" status --porcelain \
+		>"$WORK/$name.status.before"
+done
+
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync.log" 2>&1; then
+	fail "read-only invariant fixture reports an unreachable member"
+else
+	pass "read-only invariant fixture reports an unreachable member"
+fi
+assert "read-only invariant fixture names the unreachable member" \
+	"$(grep -c '^repo[[:space:]]*alpha[[:space:]]*FAILED' "$WORK/sync.log")" 1
+
+for name in alpha beta gamma skills; do
+	git -C "$WORK/demo.workspace/$name" rev-parse HEAD \
+		>"$WORK/$name.head.after"
+	git -C "$WORK/demo.workspace/$name" status --porcelain \
+		>"$WORK/$name.status.after"
+	assert "read-only invariant: sync leaves $name HEAD unchanged" \
+		"$(
+			cmp -s "$WORK/$name.head.before" "$WORK/$name.head.after" &&
+				echo same || echo changed
+		)" same
+	assert "read-only invariant: sync leaves $name porcelain unchanged" \
+		"$(
+			cmp -s "$WORK/$name.status.before" "$WORK/$name.status.after" &&
+				echo same || echo changed
+		)" same
+done
+}
+
 # --- status skill links -------------------------------------------------------
 case_status_skills() {
 prepare_demo_workspace
@@ -1300,6 +1368,7 @@ run_case status-fixtures case_status_fixtures
 run_case status case_status
 run_case status-drift case_status_drift
 run_case sync case_sync
+run_case read-only-invariant case_readonly_invariant
 run_case status-skills case_status_skills
 
 if [ "$FAILED" -eq 0 ]; then
