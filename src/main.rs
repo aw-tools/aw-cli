@@ -349,7 +349,7 @@ fn doctor(root: &Path) -> Result<bool> {
 
     let manifest = Manifest::load(root)?;
     for repo in &manifest.repos {
-        match git::probe_remote(&repo.url) {
+        match git::probe_remote(&repo.url, repo.branch.as_deref()) {
             git::RemoteProbe::Reachable => {
                 check(true, reporting::doctor_remote_reachable(&repo.path));
             }
@@ -360,6 +360,12 @@ fn doctor(root: &Path) -> Result<bool> {
                 check(
                     false,
                     reporting::doctor_remote_unreachable(&repo.path, &why),
+                );
+            }
+            git::RemoteProbe::MissingBranch(branch) => {
+                check(
+                    false,
+                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
                 );
             }
         }

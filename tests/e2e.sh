@@ -758,6 +758,70 @@ assert "doctor catches a dangling link" \
 	"$(grep -c 'FAIL  skill links' "$WORK/doctor2.log")" 1
 }
 
+case_doctor_pinned_branch() {
+git init -q --bare --initial-branch=main "$WORK/develop.git"
+git init -q --initial-branch=develop "$WORK/seed-develop"
+echo develop >"$WORK/seed-develop/file.txt"
+git -C "$WORK/seed-develop" add file.txt
+git -C "$WORK/seed-develop" -c user.name=t -c user.email=t@t commit -qm develop
+git -C "$WORK/seed-develop" push -q "$WORK/develop.git" HEAD:develop
+
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/pinned.workspace" --name pinned >"$WORK/init-pinned.log" 2>&1
+cat >>"$WORK/pinned.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "member"
+url = "$WORK/develop.git"
+branch = "develop"
+EOF
+"$AW" bootstrap "$WORK/pinned.workspace" >"$WORK/bootstrap-pinned.log" 2>&1
+if "$AW" doctor "$WORK/pinned.workspace" >"$WORK/doctor-pinned.log" 2>&1; then
+	pass "doctor accepts an existing pinned branch when remote HEAD dangles"
+else
+	fail "doctor accepts an existing pinned branch when remote HEAD dangles"
+fi
+assert "doctor reports the existing pinned branch reachable" \
+	"$(grep -c '^PASS  remote.*member.*reachable' "$WORK/doctor-pinned.log")" 1
+
+sed '/^branch = "develop"$/d' \
+	"$WORK/pinned.workspace/workspace.toml" >"$WORK/pinned.workspace/workspace.toml.next"
+mv "$WORK/pinned.workspace/workspace.toml.next" \
+	"$WORK/pinned.workspace/workspace.toml"
+if "$AW" doctor "$WORK/pinned.workspace" >"$WORK/doctor-unpinned.log" 2>&1; then
+	fail "doctor keeps probing remote HEAD for an unpinned member"
+else
+	pass "doctor keeps probing remote HEAD for an unpinned member"
+fi
+assert "doctor reports dangling remote HEAD for an unpinned member" \
+	"$(grep -c '^FAIL  remote.*member' "$WORK/doctor-unpinned.log")" 1
+
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/missing.workspace" --name missing >"$WORK/init-missing.log" 2>&1
+cat >>"$WORK/missing.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "member"
+url = "$WORK/origins/alpha.git"
+branch = "main"
+EOF
+"$AW" bootstrap "$WORK/missing.workspace" >"$WORK/bootstrap-missing.log" 2>&1
+sed 's/^branch = "main"$/branch = "missing"/' \
+	"$WORK/missing.workspace/workspace.toml" >"$WORK/missing.workspace/workspace.toml.next"
+mv "$WORK/missing.workspace/workspace.toml.next" \
+	"$WORK/missing.workspace/workspace.toml"
+if "$AW" doctor "$WORK/missing.workspace" >"$WORK/doctor-missing.log" 2>&1; then
+	fail "doctor rejects a missing pinned branch"
+else
+	pass "doctor rejects a missing pinned branch"
+fi
+assert "doctor reports the missing pinned branch as a finding" \
+	"$(grep -c '^FAIL  remote.*member' "$WORK/doctor-missing.log")" 1
+assert "doctor names the missing pinned branch instead of blaming the network" \
+	"$(grep -c '^FAIL  remote.*member.*pinned branch missing not found on remote' \
+		"$WORK/doctor-missing.log")" 1
+}
+
 # --- reusable status fixtures -------------------------------------------------
 case_status_fixtures() {
 setup_status_fixtures
@@ -1364,6 +1428,7 @@ run_case bootstrap case_bootstrap
 run_case containment case_containment
 run_case adopt case_adopt
 run_case doctor case_doctor
+run_case doctor-pinned-branch case_doctor_pinned_branch
 run_case status-fixtures case_status_fixtures
 run_case status case_status
 run_case status-drift case_status_drift
