@@ -218,6 +218,14 @@ pub fn doctor_remote_unreachable(path: &str, why: &str) -> DoctorCheck {
     )
 }
 
+pub fn doctor_remote_missing_branch(path: &str, branch: &str) -> DoctorCheck {
+    DoctorCheck::new(
+        "remote",
+        format!("{path:<24} pinned branch {branch} not found on remote"),
+        "push the branch to the remote, or correct the manifest `branch`",
+    )
+}
+
 pub fn doctor_discovery_dir(harness: &str, path: &Path) -> DoctorCheck {
     DoctorCheck::new(
         "discovery dir",

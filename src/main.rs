@@ -362,6 +362,12 @@ fn doctor(root: &Path) -> Result<bool> {
                     reporting::doctor_remote_unreachable(&repo.path, &why),
                 );
             }
+            git::RemoteProbe::MissingBranch(branch) => {
+                check(
+                    false,
+                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
+                );
+            }
         }
     }
 

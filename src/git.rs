@@ -519,7 +519,16 @@ pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
                 if let Some(mut pipe) = child.stderr.take() {
                     let _ = pipe.read_to_string(&mut stderr);
                 }
-                return classify_probe(status.success(), stderr.trim());
+                let stderr = stderr.trim();
+                // A pinned-branch probe that connects but matches no ref exits
+                // non-zero with empty stderr (`ls-remote --exit-code`): the
+                // remote is fine, the branch just is not there.
+                if let Some(name) = branch {
+                    if !status.success() && stderr.is_empty() {
+                        return RemoteProbe::MissingBranch(name.to_owned());
+                    }
+                }
+                return classify_probe(status.success(), stderr);
             }
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
@@ -562,6 +571,9 @@ pub enum RemoteProbe {
     Reachable,
     Denied(String),
     Unreachable(String),
+    /// The remote answered but the pinned branch does not exist on it — a
+    /// distinct outcome from an unreachable host, carrying the branch name.
+    MissingBranch(String),
 }
 
 pub fn version() -> Result<String> {

@@ -817,6 +817,9 @@ else
 fi
 assert "doctor reports the missing pinned branch as a finding" \
 	"$(grep -c '^FAIL  remote.*member' "$WORK/doctor-missing.log")" 1
+assert "doctor names the missing pinned branch instead of blaming the network" \
+	"$(grep -c '^FAIL  remote.*member.*pinned branch missing not found on remote' \
+		"$WORK/doctor-missing.log")" 1
 }
 
 # --- reusable status fixtures -------------------------------------------------
