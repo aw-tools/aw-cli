@@ -488,9 +488,12 @@ pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
 
 /// Whether a remote is reachable, distinguishing authentication failures from
 /// everything else so `aw doctor` can suggest the right remedy.
-pub fn probe_remote(url: &str) -> RemoteProbe {
+pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
+    let reference = branch.map_or_else(|| "HEAD".to_owned(), |name| format!("refs/heads/{name}"));
     let child = Command::new("git")
-        .args(["ls-remote", "--exit-code", "--", url, "HEAD"])
+        .args(["ls-remote", "--exit-code", "--"])
+        .arg(url)
+        .arg(reference)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
