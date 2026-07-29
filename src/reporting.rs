@@ -131,7 +131,7 @@ pub struct DoctorCheck {
 }
 
 impl DoctorCheck {
-    fn new(label: &'static str, detail: String, remedy: &'static str) -> Self {
+    const fn new(label: &'static str, detail: String, remedy: &'static str) -> Self {
         Self {
             label,
             detail,

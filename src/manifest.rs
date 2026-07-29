@@ -471,15 +471,8 @@ mod tests {
 
     #[test]
     fn failed_atomic_replacement_preserves_the_manifest() {
-        let root = std::env::current_dir()
-            .expect("current directory")
-            .join("tmp")
-            .join(format!(
-                "manifest-atomic-{}-{}",
-                std::process::id(),
-                TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-        std::fs::create_dir_all(&root).expect("create test directory");
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
         let path = root.join(FILENAME);
         std::fs::write(&path, "original\n").expect("write original manifest");
         let metadata = regular_file_metadata(&path).expect("read original metadata");
@@ -495,12 +488,11 @@ mod tests {
             "original\n"
         );
         assert_eq!(
-            std::fs::read_dir(&root)
+            std::fs::read_dir(root)
                 .expect("read test directory")
                 .count(),
             1
         );
-        std::fs::remove_dir_all(&root).expect("remove test directory");
     }
 
     #[test]

@@ -179,12 +179,14 @@ jobs:
     steps:
       - name: Check all jobs
         run: |
-          # Heavy jobs skip only on pushes to main; pull requests always run them.
-          # Accept that deliberate skip so the required CI gate stays green on main.
+          # Allowlist: accept success always; accept a skip only on non-pull-request
+          # events, where the heavy jobs skip by design so the required gate stays
+          # green on main. Any other result (including an unexpected skip on a pull
+          # request) fails the gate.
           results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}")
           for r in "${results[@]}"; do
-            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
-              echo "Job failed with result: $r"
-              exit 1
-            fi
+            if [[ "$r" == "success" ]]; then continue; fi
+            if [[ "$r" == "skipped" && "${{ github.event_name }}" != "pull_request" ]]; then continue; fi
+            echo "Job failed with result: $r"
+            exit 1
           done

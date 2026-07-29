@@ -50,7 +50,7 @@ pub enum Origin {
 }
 
 impl Origin {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::Member => "member repo",
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn prune_removes_stale_workspace_links_but_keeps_external_ones() {
-        let base = std::env::temp_dir().join("aw-test-prune");
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
         let root = base.join("ws");
         let dir = root.join(".claude/skills");
         std::fs::create_dir_all(&dir).expect("discovery dir");
@@ -365,14 +365,12 @@ mod tests {
         assert_eq!(removed, 1, "only the in-workspace stale link is removed");
         assert!(!dir.join("stale").is_symlink(), "stale link removed");
         assert!(dir.join("mine").is_symlink(), "external user link kept");
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn reports_real_discovery_directories_as_user_owned() {
-        let base = std::env::temp_dir().join("aw-test-user-owned-skills");
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
         let root = base.join("ws");
         let dir = root.join(".claude/skills");
         let managed = root.join(".skills/managed");
@@ -386,7 +384,5 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].harness, "Claude Code");
         assert_eq!(found[0].path, dir.join("mine"));
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }
