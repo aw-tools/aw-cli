@@ -33,15 +33,14 @@ pub struct Harness {
 /// Workspace-local skills; highest precedence.
 pub const LOCAL_DIR: &str = ".skills";
 
-/// Directories inside a member repository that may expose skills, relative to
-/// its checkout root.
-///
-/// `.claude/skills` is an ordinary project's discovery path. `public` and
-/// `private` are the split a dedicated skills repository uses — which is itself
-/// just a member repository that happens to contain nothing else. There is
-/// deliberately no repository-root fallback: it would sweep up arbitrary
-/// directories that merely happen to hold a `SKILL.md`.
-const MEMBER_DIRS: &[&str] = &[".claude/skills", "public", "private"];
+/// Source directories scanned inside an opted-in member repository when its
+/// manifest entry names none of its own. These are the two harness discovery
+/// paths a project already keeps, so an ordinary repository opts in with no
+/// further configuration. A repository with a bespoke layout overrides this
+/// with an explicit `dirs` list; there is deliberately no repository-root
+/// fallback, which would sweep up arbitrary directories that merely happen to
+/// hold a `SKILL.md`.
+pub const DEFAULT_SKILL_DIRS: &[&str] = &[".agents/skills", ".claude/skills"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Origin {
@@ -65,19 +64,32 @@ pub struct Skill {
     pub origin: Origin,
 }
 
+/// An explicitly configured source directory that does not exist on disk. A
+/// typo in `dirs` must surface; an absent default directory does not, so only
+/// configured directories are recorded here.
+#[derive(Debug)]
+pub struct MissingDir {
+    pub repo: String,
+    pub dir: String,
+}
+
 #[derive(Debug)]
 pub struct Resolution {
     pub linked: Vec<Skill>,
     /// Skills that lost a name collision. Shadowing is always reported, never
     /// silent.
     pub shadowed: Vec<(Skill, Origin)>,
+    /// Explicitly configured member directories that do not exist.
+    pub missing_dirs: Vec<MissingDir>,
 }
 
 /// Resolve every skill the manifest makes available, applying precedence:
 /// workspace-local beats opted-in member repositories, which are considered in
-/// manifest order. First claim wins; every loser is reported.
+/// manifest order; within a repository, configured directories in listed order.
+/// First claim wins; every loser is reported.
 pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
     let mut candidates = Vec::new();
+    let mut missing_dirs = Vec::new();
 
     for target in scan_dir(&root.join(LOCAL_DIR))? {
         let name = dir_name(&target)?;
@@ -89,25 +101,37 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
     }
 
     for repo in &manifest.repos {
-        let Some(filter) = repo.skill_filter() else {
+        let Some(config) = repo.skill_config() else {
             continue;
         };
         let checkout = root.join(&repo.path);
-        for target in scan_member(&checkout)? {
-            let skill = dir_name(&target)?;
-            if !filter.admits(&skill) {
-                continue;
+        // A configured `dirs` list is honoured verbatim; its absence falls back
+        // to the convention. Only the configured case reports a missing
+        // directory, since most repositories legitimately lack the defaults.
+        let configured = config.dirs.is_some();
+        let dirs: Vec<&str> = config.dirs.map_or_else(
+            || DEFAULT_SKILL_DIRS.to_vec(),
+            |dirs| dirs.iter().map(String::as_str).collect(),
+        );
+        for dir in dirs {
+            let source = checkout.join(dir);
+            if configured && !source.is_dir() {
+                missing_dirs.push(MissingDir {
+                    repo: repo.path.clone(),
+                    dir: dir.to_owned(),
+                });
             }
-            let name = if repo.skill_prefix {
-                format!("{}--{skill}", repo.tree_name())
-            } else {
-                skill
-            };
-            candidates.push(Skill {
-                name,
-                target,
-                origin: Origin::Member,
-            });
+            for target in scan_dir(&source)? {
+                let name = dir_name(&target)?;
+                if !config.admits(&name) {
+                    continue;
+                }
+                candidates.push(Skill {
+                    name,
+                    target,
+                    origin: Origin::Member,
+                });
+            }
         }
     }
 
@@ -125,6 +149,7 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
     Ok(Resolution {
         linked: claimed.into_values().collect(),
         shadowed,
+        missing_dirs,
     })
 }
 
@@ -244,16 +269,6 @@ fn scan_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-/// Every skill an opted-in member repository exposes, across all the layouts a
-/// member may use. Absent directories are simply skipped.
-fn scan_member(checkout: &Path) -> Result<Vec<PathBuf>> {
-    let mut all = Vec::new();
-    for dir in MEMBER_DIRS {
-        all.extend(scan_dir(&checkout.join(dir))?);
-    }
-    Ok(all)
-}
-
 /// Directory entries, treating a missing directory as empty rather than an
 /// error — an unprovisioned workspace is a normal state, not a failure.
 fn read_dir(dir: &Path) -> Result<Vec<std::fs::DirEntry>> {
@@ -315,6 +330,110 @@ fn normalise(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::Manifest;
+
+    /// Create a skill directory `<root>/<relative>` holding a minimal `SKILL.md`.
+    fn seed_skill(root: &Path, relative: &str) {
+        let dir = root.join(relative);
+        std::fs::create_dir_all(&dir).expect("skill dir");
+        std::fs::write(dir.join("SKILL.md"), "---\nname: x\n---\n").expect("SKILL.md");
+    }
+
+    /// Parse a one-repo manifest at `member` carrying `skills_fragment`.
+    fn manifest(skills_fragment: &str) -> Manifest {
+        toml::from_str(&format!(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\n{skills_fragment}"
+        ))
+        .expect("fixture parses")
+    }
+
+    #[test]
+    fn scans_configured_dirs_in_listed_order_and_dedupes_across_them() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/first/deploy");
+        seed_skill(root, "member/first/only-first");
+        seed_skill(root, "member/second/deploy");
+        seed_skill(root, "member/second/only-second");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"first\", \"second\"] }\n"),
+        )
+        .expect("resolve");
+
+        let deploy = resolution
+            .linked
+            .iter()
+            .find(|s| s.name == "deploy")
+            .expect("deploy resolves");
+        assert_eq!(
+            deploy.target,
+            root.join("member/first/deploy"),
+            "the first listed dir wins the name"
+        );
+        assert!(resolution.linked.iter().any(|s| s.name == "only-first"));
+        assert!(resolution.linked.iter().any(|s| s.name == "only-second"));
+        assert_eq!(
+            resolution.shadowed.len(),
+            1,
+            "the second dir's deploy is shadowed, not linked twice"
+        );
+        assert_eq!(
+            resolution.shadowed[0].0.target,
+            root.join("member/second/deploy")
+        );
+    }
+
+    #[test]
+    fn warns_on_a_missing_configured_dir_but_still_scans_the_rest() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/present/live");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"present\", \"absent\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert!(resolution.linked.iter().any(|s| s.name == "live"));
+        assert_eq!(resolution.missing_dirs.len(), 1);
+        assert_eq!(resolution.missing_dirs[0].repo, "member");
+        assert_eq!(resolution.missing_dirs[0].dir, "absent");
+    }
+
+    #[test]
+    fn absent_default_dirs_are_silent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+
+        let resolution = resolve(root, &manifest("skills = true\n")).expect("resolve");
+
+        assert!(resolution.linked.is_empty());
+        assert!(
+            resolution.missing_dirs.is_empty(),
+            "an absent default dir is not a warning"
+        );
+    }
+
+    #[test]
+    fn only_narrows_the_discovered_skills() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/src/kept");
+        seed_skill(root, "member/src/dropped");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"src\"], only = [\"kept\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert!(resolution.linked.iter().any(|s| s.name == "kept"));
+        assert!(!resolution.linked.iter().any(|s| s.name == "dropped"));
+    }
 
     #[test]
     fn relates_sibling_directories() {
@@ -330,10 +449,10 @@ mod tests {
     fn relates_a_member_repository_skill() {
         let rel = relative_from(
             Path::new("/home/me/ws/.agents/skills"),
-            Path::new("/home/me/ws/skills/public/release"),
+            Path::new("/home/me/ws/skills/src/release"),
         )
         .expect("shares /home/me/ws");
-        assert_eq!(rel, Path::new("../../skills/public/release"));
+        assert_eq!(rel, Path::new("../../skills/src/release"));
     }
 
     #[test]
@@ -359,6 +478,7 @@ mod tests {
         let resolution = Resolution {
             linked: Vec::new(),
             shadowed: Vec::new(),
+            missing_dirs: Vec::new(),
         };
         let removed = prune(&root, &dir, &resolution).expect("prune");
 

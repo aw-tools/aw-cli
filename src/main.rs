@@ -275,9 +275,16 @@ fn bootstrap(root: &Path) -> Result<bool> {
         );
     }
     for (loser, winner) in &resolution.shadowed {
+        let path = loser.target.strip_prefix(root).unwrap_or(&loser.target);
         println!(
             "{}",
-            reporting::bootstrap_shadowed(&loser.name, loser.origin.label(), winner.label())
+            reporting::bootstrap_shadowed(&loser.name, &path.display().to_string(), winner.label())
+        );
+    }
+    for missing in &resolution.missing_dirs {
+        println!(
+            "{}",
+            reporting::bootstrap_missing_skill_dir(&missing.repo, &missing.dir)
         );
     }
 
@@ -376,6 +383,13 @@ fn doctor(root: &Path) -> Result<bool> {
         check(
             dir.is_dir(),
             reporting::doctor_discovery_dir(harness.name, &dir),
+        );
+    }
+
+    for missing in &skills::resolve(root, &manifest)?.missing_dirs {
+        check(
+            false,
+            reporting::doctor_skill_dir(&missing.repo, &missing.dir),
         );
     }
 

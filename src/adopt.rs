@@ -43,7 +43,6 @@ pub fn run(path: &Path) -> Result<()> {
         url: String::new(),
         branch: None,
         skills: None,
-        skill_prefix: false,
     };
     let tree_name = repo.tree_name();
     anyhow::ensure!(
