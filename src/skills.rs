@@ -405,6 +405,32 @@ mod tests {
     }
 
     #[test]
+    fn default_dirs_scan_agents_before_claude() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/.agents/skills/deploy");
+        seed_skill(root, "member/.claude/skills/deploy");
+
+        let resolution = resolve(root, &manifest("skills = true\n")).expect("resolve");
+
+        let deploy = resolution
+            .linked
+            .iter()
+            .find(|s| s.name == "deploy")
+            .expect("deploy resolves");
+        assert_eq!(
+            deploy.target,
+            root.join("member/.agents/skills/deploy"),
+            "the first default dir wins the name"
+        );
+        assert_eq!(
+            resolution.shadowed.len(),
+            1,
+            "the .claude/skills copy is shadowed, not linked twice"
+        );
+    }
+
+    #[test]
     fn absent_default_dirs_are_silent() {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path();

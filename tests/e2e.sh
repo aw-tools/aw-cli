@@ -742,6 +742,14 @@ fi
 assert "doctor names the missing configured skills directory" \
 	"$(grep -Ec '^FAIL  skills dir .*skills configured skills directory absent does not exist' \
 		"$WORK/doctor-missing-dir.log")" 1
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/bootstrap-missing-dir.log" 2>&1
+assert "bootstrap warns about the missing configured skills directory" \
+	"$(grep -c 'skills configured skills directory absent does not exist' \
+		"$WORK/bootstrap-missing-dir.log")" 1
+"$AW" sync "$WORK/demo.workspace" >"$WORK/sync-missing-dir.log" 2>&1
+assert "sync warns about the missing configured skills directory" \
+	"$(grep -c 'skills configured skills directory absent does not exist' \
+		"$WORK/sync-missing-dir.log")" 1
 sed 's|skills = { dirs = \["src", "absent"\] }|skills = { dirs = ["src"] }|' \
 	"$WORK/demo.workspace/workspace.toml" >"$WORK/demo.workspace/workspace.toml.next"
 mv "$WORK/demo.workspace/workspace.toml.next" "$WORK/demo.workspace/workspace.toml"

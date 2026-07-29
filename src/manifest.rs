@@ -54,6 +54,7 @@ pub struct Identity {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Repo {
     pub path: String,
     pub url: String,
@@ -74,7 +75,10 @@ pub enum SkillOptIn {
     Table(SkillTable),
 }
 
+/// Unknown keys are rejected: a typo such as `dir` for `dirs` would otherwise
+/// parse as an empty table and silently opt in with the convention defaults.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillTable {
     /// Source directories relative to the checkout. Absent means the convention
     /// default (`DEFAULT_SKILL_DIRS` in `skills.rs`).
@@ -180,8 +184,20 @@ fn validate_skills(repo: &Repo) -> Result<()> {
         for dir in dirs {
             check_contained(dir)
                 .with_context(|| format!("repo {} skills directory {dir:?}", repo.path))?;
+            // Dedupe on the normalised path so aliased spellings of one
+            // directory ("src", "./src", "src/") cannot scan it twice and
+            // report every skill in it as shadowed by its own copy.
+            let normalised: PathBuf = Path::new(dir)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
             anyhow::ensure!(
-                seen.insert(dir.as_str()),
+                !normalised.as_os_str().is_empty(),
+                "repo {} skills directory {dir:?} names the checkout root; skills are never swept from a repository root",
+                repo.path
+            );
+            anyhow::ensure!(
+                seen.insert(normalised),
                 "repo {} lists skills directory {dir:?} more than once",
                 repo.path
             );
@@ -645,6 +661,42 @@ mod tests {
             .validate()
             .expect_err("`..` escapes the checkout");
         assert!(format!("{err:#}").contains("escapes"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_the_skills_table() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nskills = { dir = [\"src\"] }\n",
+        )
+        .expect_err("a typo'd key must not silently opt in with defaults");
+        assert!(err.to_string().contains("skills"), "{err}");
+    }
+
+    #[test]
+    fn rejects_the_removed_skill_prefix_key() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nskills = true\nskill-prefix = true\n",
+        )
+        .expect_err("the removed key is rejected, not silently ignored");
+        assert!(err.to_string().contains("skill-prefix"), "{err}");
+    }
+
+    #[test]
+    fn rejects_aliased_duplicate_dirs() {
+        let err = manifest_with_skills("skills = { dirs = [\"src\", \"./src\"] }\n")
+            .validate()
+            .expect_err("aliased spellings of one directory are duplicates");
+        assert!(err.to_string().contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_skills_dir_naming_the_checkout_root() {
+        let err = manifest_with_skills("skills = { dirs = [\".\"] }\n")
+            .validate()
+            .expect_err("the checkout root is never swept for skills");
+        assert!(err.to_string().contains("checkout root"), "{err}");
     }
 
     #[test]
