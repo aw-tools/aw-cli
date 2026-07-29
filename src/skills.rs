@@ -7,7 +7,7 @@
 
 use crate::manifest::Manifest;
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 /// Harness discovery paths, relative to the workspace root.
@@ -73,6 +73,15 @@ pub struct MissingDir {
     pub dir: String,
 }
 
+/// An `only` allowlist entry that matched no discovered skill. A typo in `only`
+/// must surface, just as a typo in `dirs` does; it is independent of a missing
+/// directory, so a repository can report both.
+#[derive(Debug)]
+pub struct UnmatchedOnly {
+    pub repo: String,
+    pub entry: String,
+}
+
 #[derive(Debug)]
 pub struct Resolution {
     pub linked: Vec<Skill>,
@@ -81,6 +90,8 @@ pub struct Resolution {
     pub shadowed: Vec<(Skill, Origin)>,
     /// Explicitly configured member directories that do not exist.
     pub missing_dirs: Vec<MissingDir>,
+    /// Configured `only` allowlist entries that matched no discovered skill.
+    pub unmatched_only: Vec<UnmatchedOnly>,
 }
 
 /// Resolve every skill the manifest makes available, applying precedence:
@@ -90,6 +101,7 @@ pub struct Resolution {
 pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
     let mut candidates = Vec::new();
     let mut missing_dirs = Vec::new();
+    let mut unmatched_only = Vec::new();
 
     for target in scan_dir(&root.join(LOCAL_DIR))? {
         let name = dir_name(&target)?;
@@ -113,6 +125,13 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
             || DEFAULT_SKILL_DIRS.to_vec(),
             |dirs| dirs.iter().map(String::as_str).collect(),
         );
+        // Seed with every `only` entry and strike each as the scan encounters
+        // it, before the `admits` filter so a matched-but-shadowed skill still
+        // counts as matched. Whatever remains matched no discovered skill.
+        let mut pending: BTreeSet<&str> = config
+            .only
+            .map(|names| names.iter().map(String::as_str).collect())
+            .unwrap_or_default();
         for dir in dirs {
             let source = checkout.join(dir);
             if configured && !source.is_dir() {
@@ -123,6 +142,7 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
             }
             for target in scan_dir(&source)? {
                 let name = dir_name(&target)?;
+                pending.remove(name.as_str());
                 if !config.admits(&name) {
                     continue;
                 }
@@ -132,6 +152,12 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
                     origin: Origin::Member,
                 });
             }
+        }
+        for entry in pending {
+            unmatched_only.push(UnmatchedOnly {
+                repo: repo.path.clone(),
+                entry: entry.to_owned(),
+            });
         }
     }
 
@@ -150,6 +176,7 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
         linked: claimed.into_values().collect(),
         shadowed,
         missing_dirs,
+        unmatched_only,
     })
 }
 
@@ -459,6 +486,102 @@ mod tests {
 
         assert!(resolution.linked.iter().any(|s| s.name == "kept"));
         assert!(!resolution.linked.iter().any(|s| s.name == "dropped"));
+        assert!(
+            resolution.unmatched_only.is_empty(),
+            "every `only` entry matched a discovered skill"
+        );
+    }
+
+    #[test]
+    fn warns_on_an_only_entry_matching_no_skill() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/src/kept");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"src\"], only = [\"ghost\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert_eq!(resolution.unmatched_only.len(), 1);
+        assert_eq!(resolution.unmatched_only[0].repo, "member");
+        assert_eq!(resolution.unmatched_only[0].entry, "ghost");
+    }
+
+    #[test]
+    fn reports_only_the_unmatched_entries() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/src/kept");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"src\"], only = [\"kept\", \"ghost\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert!(resolution.linked.iter().any(|s| s.name == "kept"));
+        assert_eq!(
+            resolution
+                .unmatched_only
+                .iter()
+                .map(|u| u.entry.as_str())
+                .collect::<Vec<_>>(),
+            ["ghost"],
+            "only the entry with no matching skill is reported"
+        );
+    }
+
+    #[test]
+    fn a_missing_dir_and_an_unmatched_only_are_reported_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/present/kept");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"present\", \"absent\"], only = [\"ghost\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert_eq!(
+            resolution.missing_dirs.len(),
+            1,
+            "the absent dir is reported"
+        );
+        assert_eq!(resolution.missing_dirs[0].dir, "absent");
+        assert_eq!(
+            resolution.unmatched_only.len(),
+            1,
+            "the unmatched entry is reported independently of the missing dir"
+        );
+        assert_eq!(resolution.unmatched_only[0].entry, "ghost");
+    }
+
+    #[test]
+    fn an_only_entry_matching_a_shadowed_skill_still_counts_as_matched() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        seed_skill(root, "member/first/deploy");
+        seed_skill(root, "member/second/deploy");
+
+        let resolution = resolve(
+            root,
+            &manifest("skills = { dirs = [\"first\", \"second\"], only = [\"deploy\"] }\n"),
+        )
+        .expect("resolve");
+
+        assert!(resolution.linked.iter().any(|s| s.name == "deploy"));
+        assert_eq!(
+            resolution.shadowed.len(),
+            1,
+            "the second deploy is shadowed"
+        );
+        assert!(
+            resolution.unmatched_only.is_empty(),
+            "a matched-but-shadowed skill still satisfies its `only` entry"
+        );
     }
 
     #[test]
@@ -505,6 +628,7 @@ mod tests {
             linked: Vec::new(),
             shadowed: Vec::new(),
             missing_dirs: Vec::new(),
+            unmatched_only: Vec::new(),
         };
         let removed = prune(&root, &dir, &resolution).expect("prune");
 

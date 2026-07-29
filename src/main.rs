@@ -120,6 +120,13 @@ fn status(root: &Path, json: bool, exit_code: bool) -> Result<bool> {
 }
 
 fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> Result<()> {
+    // Validate an explicit name before any filesystem or template side effect,
+    // so a rejected name leaves no created directory behind. The derived
+    // default is validated below, where the resolved root is available.
+    if let Some(name) = name.as_deref() {
+        validate_name(name)?;
+    }
+
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let root =
@@ -133,8 +140,13 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
         source.reference.as_deref().unwrap_or(""),
         &prepared.sha,
     )?;
-    let name = name.unwrap_or_else(|| default_name(&root));
-    validate_name(&name)?;
+    let name = if let Some(name) = name {
+        name
+    } else {
+        let name = default_name(&root);
+        validate_name(&name)?;
+        name
+    };
     let created = template::materialise(&root, &prepared)?;
     if created.iter().any(|path| path == manifest::FILENAME) {
         set_workspace_name(&root, &name)?;
@@ -287,6 +299,12 @@ fn bootstrap(root: &Path) -> Result<bool> {
             reporting::bootstrap_missing_skill_dir(&missing.repo, &missing.dir)
         );
     }
+    for unmatched in &resolution.unmatched_only {
+        println!(
+            "{}",
+            reporting::bootstrap_unmatched_only(&unmatched.repo, &unmatched.entry)
+        );
+    }
 
     // Phase 4 — verify.
     let missing = manifest
@@ -386,10 +404,17 @@ fn doctor(root: &Path) -> Result<bool> {
         );
     }
 
-    for missing in &skills::resolve(root, &manifest)?.missing_dirs {
+    let resolution = skills::resolve(root, &manifest)?;
+    for missing in &resolution.missing_dirs {
         check(
             false,
             reporting::doctor_skill_dir(&missing.repo, &missing.dir),
+        );
+    }
+    for unmatched in &resolution.unmatched_only {
+        check(
+            false,
+            reporting::doctor_skill_unmatched_only(&unmatched.repo, &unmatched.entry),
         );
     }
 
@@ -422,6 +447,18 @@ mod tests {
         assert!(validate_name("bad\\slash").is_err());
         assert!(validate_name("bad\nnewline").is_err());
         assert!(validate_name("   ").is_err());
+    }
+
+    #[test]
+    fn init_rejects_invalid_explicit_name_without_creating_the_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("workspace");
+        let result = init(Some(target.clone()), Some("bad\"quote".to_owned()), None);
+        assert!(result.is_err(), "an invalid explicit name must fail init");
+        assert!(
+            !target.exists(),
+            "an invalid explicit name must not create the target directory"
+        );
     }
 
     #[test]

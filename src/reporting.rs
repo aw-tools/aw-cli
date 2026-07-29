@@ -81,6 +81,10 @@ pub fn bootstrap_missing_skill_dir(repo: &str, dir: &str) -> String {
     skill_missing_dir(repo, dir)
 }
 
+pub fn bootstrap_unmatched_only(repo: &str, entry: &str) -> String {
+    skill_unmatched_only(repo, entry)
+}
+
 pub fn bootstrap_verify(repos: usize, missing: usize, linked: usize, shadowed: usize) -> String {
     format!(
         "verify    {repos} repo(s), {missing} missing, {linked} skill(s) linked, {shadowed} shadowed"
@@ -119,6 +123,10 @@ pub fn sync_missing_skill_dir(repo: &str, dir: &str) -> String {
     skill_missing_dir(repo, dir)
 }
 
+pub fn sync_unmatched_only(repo: &str, entry: &str) -> String {
+    skill_unmatched_only(repo, entry)
+}
+
 /// Report a skill that lost a first-appearance collision. The winning name was
 /// already sourced from `winner`; this one at `path` is ignored.
 fn skill_shadowed(name: &str, path: &str, winner: &str) -> String {
@@ -129,6 +137,12 @@ fn skill_shadowed(name: &str, path: &str, winner: &str) -> String {
 /// typo in the manifest surfaces here rather than silently discovering nothing.
 fn skill_missing_dir(repo: &str, dir: &str) -> String {
     format!("skills    {repo} configured skills directory {dir} does not exist")
+}
+
+/// Report an `only` allowlist entry that matched no discovered skill. A typo in
+/// the manifest surfaces here rather than silently narrowing to nothing.
+fn skill_unmatched_only(repo: &str, entry: &str) -> String {
+    format!("skills    {repo} `only` entry {entry} matched no skill")
 }
 
 pub fn sync_verify(
@@ -259,6 +273,14 @@ pub fn doctor_skill_dir(repo: &str, dir: &str) -> DoctorCheck {
         "skills dir",
         format!("{repo} configured skills directory {dir} does not exist"),
         "create the directory or correct the manifest `dirs`",
+    )
+}
+
+pub fn doctor_skill_unmatched_only(repo: &str, entry: &str) -> DoctorCheck {
+    DoctorCheck::new(
+        "skills only",
+        format!("{repo} `only` entry {entry} matched no skill"),
+        "correct the manifest `only` or drop the entry",
     )
 }
 

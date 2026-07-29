@@ -69,6 +69,12 @@ pub fn run(root: &Path) -> Result<bool> {
             reporting::sync_missing_skill_dir(&missing.repo, &missing.dir)
         );
     }
+    for unmatched in &resolution.unmatched_only {
+        println!(
+            "{}",
+            reporting::sync_unmatched_only(&unmatched.repo, &unmatched.entry)
+        );
+    }
 
     println!(
         "{}",
