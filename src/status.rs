@@ -63,14 +63,14 @@ enum CheckoutState {
 }
 
 impl RepositoryState {
-    fn presence(&self) -> Presence {
+    const fn presence(&self) -> Presence {
         match self.state {
             CheckoutState::Absent => Presence::Absent,
             CheckoutState::Present { .. } => Presence::Present,
         }
     }
 
-    fn working_tree(&self) -> ReportedWorkingTree {
+    const fn working_tree(&self) -> ReportedWorkingTree {
         match self.state {
             CheckoutState::Absent => ReportedWorkingTree::NotPresent,
             CheckoutState::Present {
@@ -784,9 +784,7 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     report.add_section(PresenceSection {
         repositories: repositories.clone(),
     });
-    report.add_section(WorkingTreeSection {
-        repositories: repositories.clone(),
-    });
+    report.add_section(WorkingTreeSection { repositories });
     report.add_section(ahead_behind);
     report.add_section(configuration_drift);
     report.add_section(unlisted_checkouts);

@@ -56,8 +56,8 @@ enum Verb {
     },
     /// Report repository presence and working-tree state.
     Status {
-        /// Emit unstable incubation JSON instead of the human report.
-        #[arg(long, help = "Emit JSON (unstable during incubation)")]
+        /// Emit JSON (unstable during incubation).
+        #[arg(long)]
         json: bool,
         /// Exit non-zero when bootstrap-convergeable findings are present.
         #[arg(long)]
@@ -412,20 +412,18 @@ mod tests {
 
     #[test]
     fn workspace_name_rewrite_does_not_touch_identity() {
-        let root = std::env::temp_dir().join(format!("aw-name-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir(&root).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
         std::fs::write(
             root.join(manifest::FILENAME),
             "[identity]\nname = \"CHANGEME\"\n\n[workspace]\nname = \"CHANGEME\"\n",
         )
         .unwrap();
 
-        set_workspace_name(&root, "demo").unwrap();
+        set_workspace_name(root, "demo").unwrap();
 
         let text = std::fs::read_to_string(root.join(manifest::FILENAME)).unwrap();
         assert!(text.contains("[identity]\nname = \"CHANGEME\""));
         assert!(text.contains("[workspace]\nname = \"demo\""));
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
