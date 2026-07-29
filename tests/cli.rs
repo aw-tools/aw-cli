@@ -95,6 +95,41 @@ fn adopt_rejects_a_checkout_outside_the_workspace() {
         .stderr(predicate::str::contains("outside the workspace"));
 }
 
+// --- manifest: skills contract validation -----------------------------------
+
+#[test]
+fn a_command_rejects_an_empty_skills_dirs_list() {
+    let root = tempfile::tempdir().expect("temp dir");
+    write_manifest(
+        root.path(),
+        "fixture",
+        "\n[[repo]]\npath = \"member\"\nurl = \"u\"\nskills = { dirs = [] }\n",
+    );
+
+    aw().arg("status")
+        .arg(root.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty `dirs`"));
+}
+
+#[test]
+fn a_command_accepts_a_configured_skills_table() {
+    let root = tempfile::tempdir().expect("temp dir");
+    write_manifest(
+        root.path(),
+        "fixture",
+        "\n[[repo]]\npath = \"member\"\nurl = \"u\"\nskills = { dirs = [\"src\"], only = [\"release\"] }\n",
+    );
+
+    aw().arg("status")
+        .arg("--json")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"repository\": \"member\""));
+}
+
 // --- status: JSON shape, exit-code semantics, stream split ------------------
 
 const MEMBER: &str = "\n[[repo]]\npath = \"alpha\"\nurl = \"https://example.invalid/alpha.git\"\n";

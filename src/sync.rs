@@ -57,9 +57,16 @@ pub fn run(root: &Path) -> Result<bool> {
         );
     }
     for (loser, winner) in &resolution.shadowed {
+        let path = loser.target.strip_prefix(root).unwrap_or(&loser.target);
         println!(
             "{}",
-            reporting::sync_shadowed(&loser.name, loser.origin.label(), winner.label())
+            reporting::sync_shadowed(&loser.name, &path.display().to_string(), winner.label())
+        );
+    }
+    for missing in &resolution.missing_dirs {
+        println!(
+            "{}",
+            reporting::sync_missing_skill_dir(&missing.repo, &missing.dir)
         );
     }
 

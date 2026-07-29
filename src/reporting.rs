@@ -73,8 +73,12 @@ pub fn bootstrap_skill(name: &str, origin: &str) -> String {
     format!("skill     {name:<24} {origin}")
 }
 
-pub fn bootstrap_shadowed(name: &str, origin: &str, winner: &str) -> String {
-    format!("shadowed  {name:<24} {origin} shadowed by {winner}")
+pub fn bootstrap_shadowed(name: &str, path: &str, winner: &str) -> String {
+    skill_shadowed(name, path, winner)
+}
+
+pub fn bootstrap_missing_skill_dir(repo: &str, dir: &str) -> String {
+    skill_missing_dir(repo, dir)
 }
 
 pub fn bootstrap_verify(repos: usize, missing: usize, linked: usize, shadowed: usize) -> String {
@@ -107,8 +111,24 @@ pub fn sync_skill(name: &str, origin: &str) -> String {
     format!("skill     {name:<24} {origin}")
 }
 
-pub fn sync_shadowed(name: &str, origin: &str, winner: &str) -> String {
-    format!("shadowed  {name:<24} {origin} shadowed by {winner}")
+pub fn sync_shadowed(name: &str, path: &str, winner: &str) -> String {
+    skill_shadowed(name, path, winner)
+}
+
+pub fn sync_missing_skill_dir(repo: &str, dir: &str) -> String {
+    skill_missing_dir(repo, dir)
+}
+
+/// Report a skill that lost a first-appearance collision. The winning name was
+/// already sourced from `winner`; this one at `path` is ignored.
+fn skill_shadowed(name: &str, path: &str, winner: &str) -> String {
+    format!("shadowed  {name} at {path} is ignored because {winner} is already sourced")
+}
+
+/// Report an explicitly configured source directory that does not exist. A
+/// typo in the manifest surfaces here rather than silently discovering nothing.
+fn skill_missing_dir(repo: &str, dir: &str) -> String {
+    format!("skills    {repo} configured skills directory {dir} does not exist")
 }
 
 pub fn sync_verify(
@@ -231,6 +251,14 @@ pub fn doctor_discovery_dir(harness: &str, path: &Path) -> DoctorCheck {
         "discovery dir",
         format!("{harness:<12} {}", path.display()),
         "run `aw bootstrap`",
+    )
+}
+
+pub fn doctor_skill_dir(repo: &str, dir: &str) -> DoctorCheck {
+    DoctorCheck::new(
+        "skills dir",
+        format!("{repo} configured skills directory {dir} does not exist"),
+        "create the directory or correct the manifest `dirs`",
     )
 }
 

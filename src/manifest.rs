@@ -54,6 +54,7 @@ pub struct Identity {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Repo {
     pub path: String,
     pub url: String,
@@ -62,19 +63,28 @@ pub struct Repo {
     /// from a repository that has not explicitly opted in.
     #[serde(default)]
     pub skills: Option<SkillOptIn>,
-    /// Prefix this repository's skills with its tree name when linking. Off by
-    /// default: a skill's directory name is the name it declares about itself,
-    /// and renaming it breaks both that declaration and any cross-reference
-    /// between skills in the same repository.
-    #[serde(default, rename = "skill-prefix")]
-    pub skill_prefix: bool,
 }
 
+/// A repository's `skills` value: either a boolean toggle or a configuration
+/// table. `true` opts in with the convention defaults; `false` is the same as
+/// absent. The table narrows which source directories and skill names apply.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum SkillOptIn {
-    All(bool),
-    Named(Vec<String>),
+    Toggle(bool),
+    Table(SkillTable),
+}
+
+/// Unknown keys are rejected: a typo such as `dir` for `dirs` would otherwise
+/// parse as an empty table and silently opt in with the convention defaults.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillTable {
+    /// Source directories relative to the checkout. Absent means the convention
+    /// default (`DEFAULT_SKILL_DIRS` in `skills.rs`).
+    pub dirs: Option<Vec<String>>,
+    /// Allowlist of skill names. Absent admits every discovered skill.
+    pub only: Option<Vec<String>>,
 }
 
 impl Repo {
@@ -90,27 +100,35 @@ impl Repo {
             .to_owned()
     }
 
-    /// Which named skills this repository exposes, if it opted in at all.
-    pub fn skill_filter(&self) -> Option<SkillFilter<'_>> {
+    /// The repository's effective skill configuration, if it opted in at all.
+    /// `None` covers both an absent `skills` key and `skills = false`.
+    pub fn skill_config(&self) -> Option<SkillConfig<'_>> {
         match self.skills.as_ref()? {
-            SkillOptIn::All(false) => None,
-            SkillOptIn::All(true) => Some(SkillFilter::All),
-            SkillOptIn::Named(names) => Some(SkillFilter::Named(names)),
+            SkillOptIn::Toggle(false) => None,
+            SkillOptIn::Toggle(true) => Some(SkillConfig {
+                dirs: None,
+                only: None,
+            }),
+            SkillOptIn::Table(table) => Some(SkillConfig {
+                dirs: table.dirs.as_deref(),
+                only: table.only.as_deref(),
+            }),
         }
     }
 }
 
-pub enum SkillFilter<'a> {
-    All,
-    Named(&'a [String]),
+/// Resolved view of an opted-in repository's `skills` table, borrowing the
+/// manifest. `dirs = None` means fall back to the convention default; `only =
+/// None` means admit every discovered skill.
+pub struct SkillConfig<'a> {
+    pub dirs: Option<&'a [String]>,
+    pub only: Option<&'a [String]>,
 }
 
-impl SkillFilter<'_> {
+impl SkillConfig<'_> {
     pub fn admits(&self, name: &str) -> bool {
-        match self {
-            Self::All => true,
-            Self::Named(names) => names.iter().any(|n| n == name),
-        }
+        self.only
+            .is_none_or(|names| names.iter().any(|n| n == name))
     }
 }
 
@@ -143,9 +161,56 @@ impl Manifest {
                 "repo path {} collides with another entry on tree name {tree:?}; give the repositories distinct paths",
                 repo.path
             );
+            validate_skills(repo)?;
         }
         Ok(())
     }
+}
+
+/// Validate an opted-in repository's `skills` table. Applies the containment
+/// rules to each source directory and rejects opt-ins that admit nothing.
+/// Errors name the offending repository so a typo is easy to locate.
+fn validate_skills(repo: &Repo) -> Result<()> {
+    let Some(SkillOptIn::Table(table)) = repo.skills.as_ref() else {
+        return Ok(());
+    };
+    if let Some(dirs) = table.dirs.as_ref() {
+        anyhow::ensure!(
+            !dirs.is_empty(),
+            "repo {} opts into skills with an empty `dirs`; drop the key for the defaults or name at least one directory",
+            repo.path
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for dir in dirs {
+            check_contained(dir)
+                .with_context(|| format!("repo {} skills directory {dir:?}", repo.path))?;
+            // Dedupe on the normalised path so aliased spellings of one
+            // directory ("src", "./src", "src/") cannot scan it twice and
+            // report every skill in it as shadowed by its own copy.
+            let normalised: PathBuf = Path::new(dir)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
+            anyhow::ensure!(
+                !normalised.as_os_str().is_empty(),
+                "repo {} skills directory {dir:?} names the checkout root; skills are never swept from a repository root",
+                repo.path
+            );
+            anyhow::ensure!(
+                seen.insert(normalised),
+                "repo {} lists skills directory {dir:?} more than once",
+                repo.path
+            );
+        }
+    }
+    if let Some(only) = table.only.as_ref() {
+        anyhow::ensure!(
+            !only.is_empty(),
+            "repo {} opts into skills with an empty `only`; drop the key to admit every skill or name at least one",
+            repo.path
+        );
+    }
+    Ok(())
 }
 
 /// Replace the template placeholder only in the `[workspace]` table.
@@ -493,6 +558,145 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Parse a one-repo manifest whose repo carries `skills_fragment` verbatim,
+    /// returning the manifest without validating it.
+    fn manifest_with_skills(skills_fragment: &str) -> Manifest {
+        toml::from_str(&format!(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\n{skills_fragment}"
+        ))
+        .expect("fixture parses")
+    }
+
+    #[test]
+    fn absent_skills_key_is_off() {
+        let manifest = manifest_with_skills("");
+        assert!(manifest.repos[0].skill_config().is_none());
+    }
+
+    #[test]
+    fn skills_false_is_off() {
+        let manifest = manifest_with_skills("skills = false\n");
+        assert!(manifest.repos[0].skill_config().is_none());
+    }
+
+    #[test]
+    fn skills_true_opts_in_with_defaults() {
+        let manifest = manifest_with_skills("skills = true\n");
+        let config = manifest.repos[0].skill_config().expect("true opts in");
+        assert!(config.dirs.is_none(), "defaults to the convention dirs");
+        assert!(config.only.is_none(), "admits every skill");
+        assert!(config.admits("anything"));
+    }
+
+    #[test]
+    fn empty_skills_table_is_the_same_as_true() {
+        let manifest = manifest_with_skills("skills = {}\n");
+        let config = manifest.repos[0]
+            .skill_config()
+            .expect("an empty table opts in");
+        assert!(config.dirs.is_none());
+        assert!(config.only.is_none());
+    }
+
+    #[test]
+    fn skills_table_carries_dirs_and_only() {
+        let manifest =
+            manifest_with_skills("skills = { dirs = [\"src\"], only = [\"release\"] }\n");
+        let config = manifest.repos[0].skill_config().expect("a table opts in");
+        assert_eq!(config.dirs, Some(["src".to_owned()].as_slice()));
+        assert!(config.admits("release"));
+        assert!(!config.admits("other"), "only narrows to the allowlist");
+    }
+
+    #[test]
+    fn rejects_the_removed_list_form() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nskills = [\"release\"]\n",
+        )
+        .expect_err("the bare list form is dropped");
+        assert!(err.to_string().contains("skills"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_dirs() {
+        let err = manifest_with_skills("skills = { dirs = [] }\n")
+            .validate()
+            .expect_err("an empty dirs list is a mistake");
+        assert!(err.to_string().contains("empty `dirs`"), "{err}");
+    }
+
+    #[test]
+    fn rejects_duplicate_dirs() {
+        let err = manifest_with_skills("skills = { dirs = [\"src\", \"src\"] }\n")
+            .validate()
+            .expect_err("duplicate dirs are a mistake");
+        assert!(err.to_string().contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_only() {
+        let err = manifest_with_skills("skills = { only = [] }\n")
+            .validate()
+            .expect_err("an empty allowlist admits nothing");
+        assert!(err.to_string().contains("empty `only`"), "{err}");
+    }
+
+    #[test]
+    fn rejects_an_absolute_skills_dir() {
+        let err = manifest_with_skills("skills = { dirs = [\"/etc\"] }\n")
+            .validate()
+            .expect_err("an absolute dir escapes the checkout");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("absolute"), "{chain}");
+        assert!(chain.contains("member"), "names the repo: {chain}");
+    }
+
+    #[test]
+    fn rejects_a_skills_dir_escaping_the_checkout() {
+        let err = manifest_with_skills("skills = { dirs = [\"../elsewhere\"] }\n")
+            .validate()
+            .expect_err("`..` escapes the checkout");
+        assert!(format!("{err:#}").contains("escapes"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_the_skills_table() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nskills = { dir = [\"src\"] }\n",
+        )
+        .expect_err("a typo'd key must not silently opt in with defaults");
+        assert!(err.to_string().contains("skills"), "{err}");
+    }
+
+    #[test]
+    fn rejects_the_removed_skill_prefix_key() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nskills = true\nskill-prefix = true\n",
+        )
+        .expect_err("the removed key is rejected, not silently ignored");
+        assert!(err.to_string().contains("skill-prefix"), "{err}");
+    }
+
+    #[test]
+    fn rejects_aliased_duplicate_dirs() {
+        let err = manifest_with_skills("skills = { dirs = [\"src\", \"./src\"] }\n")
+            .validate()
+            .expect_err("aliased spellings of one directory are duplicates");
+        assert!(err.to_string().contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_skills_dir_naming_the_checkout_root() {
+        let err = manifest_with_skills("skills = { dirs = [\".\"] }\n")
+            .validate()
+            .expect_err("the checkout root is never swept for skills");
+        assert!(err.to_string().contains("checkout root"), "{err}");
     }
 
     #[test]

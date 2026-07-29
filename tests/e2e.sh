@@ -141,12 +141,16 @@ for name in alpha beta gamma skills; do
 	echo "$name" >"$WORK/seed-$name/file.txt"
 	case "$name" in
 	# alpha never opts in, so its skill must stay invisible.
-	alpha) seed_skill "$WORK/seed-$name" .claude/skills/private-alpha "Never opted in." ;;
-	# beta and gamma both expose `deploy`; only gamma prefixes, so both survive.
+	alpha) seed_skill "$WORK/seed-$name" .claude/skills/alpha-hidden "Never opted in." ;;
+	# beta and gamma both expose `deploy`; beta comes first in manifest order, so
+	# it wins the name and gamma's copy is shadowed.
 	beta) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Beta deploy skill." ;;
 	gamma) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Gamma deploy skill." ;;
-	# A dedicated skills repository uses the public/private split.
-	skills) seed_skill "$WORK/seed-$name" public/release "Shared release skill." ;;
+	# A dedicated skills repository keeps its corpus under a single `src` dir.
+	skills)
+		seed_skill "$WORK/seed-$name" src/release "Shared release skill."
+		seed_skill "$WORK/seed-$name" src/pipeline "Shared pipeline skill."
+		;;
 	esac
 	git -C "$WORK/seed-$name" add -A
 	git -C "$WORK/seed-$name" -c user.name=t -c user.email=t@t commit -qm init
@@ -198,12 +202,11 @@ skills = true
 path = "gamma"
 url = "$WORK/origins/gamma.git"
 skills = true
-skill-prefix = true
 
 [[repo]]
 path = "skills"
 url = "$WORK/origins/skills.git"
-skills = ["release"]
+skills = { dirs = ["src"] }
 EOF
 
 	mkdir -p "$WORK/demo.workspace/.skills/release"
@@ -426,14 +429,23 @@ for dir in .claude/skills .agents/skills; do
 	assert "link in $dir is relative" \
 		"$(readlink "$WORK/demo.workspace/$dir/release" | cut -c1-2)" ..
 done
-assert "shared skill is shadowed, not linked twice" \
-	"$(grep -c 'shadowed  release' "$WORK/boot1.log")" 1
-assert "member repo skill keeps its own name by default" \
+assert "workspace-local skill shadows the member copy, not linked twice" \
+	"$(grep -Ec 'shadowed  release at .* is ignored because workspace is already sourced' \
+		"$WORK/boot1.log")" 1
+assert "member repo skill keeps its own name" \
 	"$(grep -c 'Beta deploy skill' "$WORK/demo.workspace/.claude/skills/deploy/SKILL.md")" 1
-assert "skill-prefix namespaces the repo that asks for it" \
-	"$(grep -c 'Gamma deploy skill' "$WORK/demo.workspace/.claude/skills/gamma--deploy/SKILL.md")" 1
+assert "first-appearance wins a cross-repo name collision" \
+	"$(grep -Ec 'shadowed  deploy at .* is ignored because member repo is already sourced' \
+		"$WORK/boot1.log")" 1
+assert "the shadowed copy contributes no namespaced link" \
+	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'deploy' || true)" 1
 assert "opted-out repo contributes nothing" \
-	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'private-alpha')" 0
+	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'alpha-hidden')" 0
+for dir in .claude/skills .agents/skills; do
+	assert "dedicated skills repo links a skill from its src dir in $dir" \
+		"$(grep -c 'Shared pipeline skill' \
+			"$WORK/demo.workspace/$dir/pipeline/SKILL.md")" 1
+done
 
 # --- the deny-all invariant --------------------------------------------------
 echo 'TOKEN=secret' >"$WORK/demo.workspace/leak.env"
@@ -716,6 +728,31 @@ prepare_demo_workspace
 assert "doctor reports no failures" "$(grep -c '^FAIL' "$WORK/doctor.log")" 0
 assert "doctor passes the workspace hook check" \
 	"$(grep -c '^PASS  pre-commit hook.*core\.hooksPath = \.githooks' "$WORK/doctor.log")" 1
+
+# A configured source directory that does not exist is a typo the operator must
+# see, so doctor reports it as a finding.
+sed 's|skills = { dirs = \["src"\] }|skills = { dirs = ["src", "absent"] }|' \
+	"$WORK/demo.workspace/workspace.toml" >"$WORK/demo.workspace/workspace.toml.next"
+mv "$WORK/demo.workspace/workspace.toml.next" "$WORK/demo.workspace/workspace.toml"
+if "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor-missing-dir.log" 2>&1; then
+	fail "doctor fails on a configured skills dir that does not exist"
+else
+	pass "doctor fails on a configured skills dir that does not exist"
+fi
+assert "doctor names the missing configured skills directory" \
+	"$(grep -Ec '^FAIL  skills dir .*skills configured skills directory absent does not exist' \
+		"$WORK/doctor-missing-dir.log")" 1
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/bootstrap-missing-dir.log" 2>&1
+assert "bootstrap warns about the missing configured skills directory" \
+	"$(grep -c 'skills configured skills directory absent does not exist' \
+		"$WORK/bootstrap-missing-dir.log")" 1
+"$AW" sync "$WORK/demo.workspace" >"$WORK/sync-missing-dir.log" 2>&1
+assert "sync warns about the missing configured skills directory" \
+	"$(grep -c 'skills configured skills directory absent does not exist' \
+		"$WORK/sync-missing-dir.log")" 1
+sed 's|skills = { dirs = \["src", "absent"\] }|skills = { dirs = ["src"] }|' \
+	"$WORK/demo.workspace/workspace.toml" >"$WORK/demo.workspace/workspace.toml.next"
+mv "$WORK/demo.workspace/workspace.toml.next" "$WORK/demo.workspace/workspace.toml"
 
 git -C "$WORK/working-tree.workspace" config --local core.hooksPath .other
 "$AW" bootstrap "$WORK/working-tree.workspace" >"$WORK/custom-hook-bootstrap.log" 2>&1
@@ -1252,7 +1289,8 @@ done
 assert "sync reports each changed harness link" \
 	"$(grep -c 'skills.*1 link(s) changed' "$WORK/sync.log")" 2
 assert "sync reports shadowing during re-link" \
-	"$(grep -c '^shadowed[[:space:]]*release' "$WORK/sync.log")" 1
+	"$(grep -Ec '^shadowed  release at .* is ignored because workspace is already sourced' \
+		"$WORK/sync.log")" 1
 
 rm "$WORK/demo.workspace/workspace-alias"
 ln -s gamma "$WORK/demo.workspace/workspace-alias"
