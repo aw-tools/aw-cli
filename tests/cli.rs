@@ -194,3 +194,109 @@ fn status_exit_code_fails_on_an_absent_member() {
         .failure()
         .code(1);
 }
+
+// --- status: workspace hook health ------------------------------------------
+
+/// Git-initialise `root` so the workspace repository reads as present. `status`
+/// needs neither commits nor a remote, so an unborn HEAD is enough.
+fn git_init(root: &Path) {
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(root)
+        .status()
+        .expect("run git init")
+        .success();
+    assert!(ok, "git init succeeds");
+}
+
+fn set_hooks_path(root: &Path, value: &str) {
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--local", "core.hooksPath", value])
+        .status()
+        .expect("run git config")
+        .success();
+    assert!(ok, "git config core.hooksPath succeeds");
+}
+
+fn write_executable_hook(hooks_dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = hooks_dir.join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\n").expect("write hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod hook");
+}
+
+/// A git-initialised, member-less workspace with a `.githooks/` directory but no
+/// `[identity]`, so the only findings possible are hook-related.
+fn hook_fixture(root: &Path) -> std::path::PathBuf {
+    git_init(root);
+    write_manifest(root, "fixture", "");
+    let hooks_dir = root.join(".githooks");
+    std::fs::create_dir(&hooks_dir).expect("githooks dir");
+    hooks_dir
+}
+
+#[test]
+fn status_reports_an_unset_workspace_hook_as_drift() {
+    let root = tempfile::tempdir().expect("temp dir");
+    hook_fixture(root.path());
+    // core.hooksPath left unset.
+
+    aw().args(["status", "--json"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"name\": \"configuration_drift\"")
+                .and(predicate::str::contains("core.hooksPath")),
+        );
+
+    aw().args(["status", "--exit-code"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn status_is_clean_for_a_live_workspace_hook() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let hooks_dir = hook_fixture(root.path());
+    write_executable_hook(&hooks_dir);
+    set_hooks_path(root.path(), ".githooks");
+
+    aw().args(["status", "--exit-code"])
+        .arg(root.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn status_reports_a_dead_workspace_hook_without_double_counting() {
+    let root = tempfile::tempdir().expect("temp dir");
+    hook_fixture(root.path());
+    set_hooks_path(root.path(), ".githooks");
+    // `.githooks/pre-commit` is absent, so the configured redirect is correct
+    // but the hook is dead.
+
+    aw().args(["status", "--json"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"name\": \"hook_health\"")
+                .and(predicate::str::contains(
+                    "\"hook\": \".githooks/pre-commit\"",
+                ))
+                // Config redirect is correct, so it must not also surface as a
+                // drifted configuration key.
+                .and(predicate::str::contains("core.hooksPath").not()),
+        );
+
+    aw().args(["status", "--exit-code"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .code(1);
+}
