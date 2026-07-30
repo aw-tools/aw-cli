@@ -309,6 +309,27 @@ pub fn doctor_dangling_link(path: &Path) -> String {
     format!("      {:<22} {}", "", path.display())
 }
 
+/// Report a member's delivery model. Informational only: a member that declares
+/// none is not a fault, it is the conservative default, so this renders no
+/// PASS/FAIL marker and prints outside `doctor`'s pass/fail channel.
+pub fn doctor_delivery_model(path: &str, declared: Option<&str>) -> String {
+    let state = match declared {
+        Some(file) => format!("declared ({file})"),
+        None => "none — conservative default applies".to_owned(),
+    };
+    format!("      {:<22} {path:<24} {state}", "delivery")
+}
+
+/// The delivery-model notice printed to stderr after an adoption, alongside the
+/// review-and-commit guidance. A freshly adopted member that declares none takes
+/// the conservative default; that is informational, not an error.
+pub fn adopt_delivery_model(declared: Option<&str>) -> String {
+    match declared {
+        Some(file) => format!("Delivery model declared in {file}; honour it for this repository."),
+        None => "No delivery model declared; the conservative default applies.".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +363,35 @@ mod tests {
     fn hook_live_renders_pass_when_live() {
         let check = doctor_hook_live(Path::new("/w/.githooks/pre-commit"), true);
         assert!(doctor_check(true, &check).starts_with("PASS"));
+    }
+
+    #[test]
+    fn delivery_model_declared_names_the_file() {
+        let line = doctor_delivery_model("member", Some("AGENTS.md"));
+        assert!(line.contains("delivery"));
+        assert!(line.contains("member"));
+        assert!(line.contains("declared (AGENTS.md)"));
+    }
+
+    #[test]
+    fn delivery_model_absent_states_the_conservative_default() {
+        let line = doctor_delivery_model("member", None);
+        assert!(line.contains("none — conservative default applies"));
+        // Informational only: never a PASS/FAIL marker that would read as a
+        // check and never fail the doctor exit code.
+        assert!(!line.contains("PASS") && !line.contains("FAIL"));
+    }
+
+    #[test]
+    fn adopt_delivery_model_declared_names_the_file() {
+        let line = adopt_delivery_model(Some("AGENTS.md"));
+        assert!(line.contains("declared in AGENTS.md"));
+    }
+
+    #[test]
+    fn adopt_delivery_model_absent_states_the_conservative_default() {
+        let line = adopt_delivery_model(None);
+        assert!(line.contains("No delivery model declared"));
+        assert!(line.contains("conservative default"));
     }
 }

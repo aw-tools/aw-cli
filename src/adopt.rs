@@ -1,7 +1,9 @@
 //! Adopt an existing checkout into the workspace manifest.
 
+use crate::delivery;
 use crate::git;
 use crate::manifest::{self, Manifest, Repo};
+use crate::reporting;
 use anyhow::{Context, Result};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -89,6 +91,14 @@ pub fn run(path: &Path) -> Result<()> {
         repo.path,
         repo.url,
         repo.branch.as_deref().unwrap_or_default()
+    );
+    // The machine-readable line above is the command's stdout; this notice and
+    // the review guidance are diagnostics for the operator, so both go to
+    // stderr. Live presence detection only (decision 45): nothing about the
+    // model is parsed or cached workspace-side.
+    eprintln!(
+        "{}",
+        reporting::adopt_delivery_model(delivery::declared_in(&checkout))
     );
     eprintln!(
         "Review {} in workspace repository {}, then commit it; `aw adopt` made no commit.",

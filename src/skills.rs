@@ -117,6 +117,15 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
             continue;
         };
         let checkout = root.join(&repo.path);
+        // The escape boundary for every sweep below, resolved once per repo and
+        // lazily: a member that is not yet on disk has no source to sweep, so
+        // containment never arises and the checkout stays unresolved; a checkout
+        // that cannot be canonicalised for a non-escape reason leaves each sweep
+        // the soft skip `scan_dir` already performs for a missing source.
+        let canonical_checkout = checkout
+            .is_dir()
+            .then(|| std::fs::canonicalize(&checkout).ok())
+            .flatten();
         // A configured `dirs` list is honoured verbatim; its absence falls back
         // to the convention. Only the configured case reports a missing
         // directory, since most repositories legitimately lack the defaults.
@@ -140,11 +149,44 @@ pub fn resolve(root: &Path, manifest: &Manifest) -> Result<Resolution> {
                     dir: dir.to_owned(),
                 });
             }
+            // Resolve-and-reject: a source that exists must resolve inside its
+            // checkout. The lexical guard in `manifest::check_contained` never
+            // touches the filesystem, so a configured or defaulted directory
+            // that is a symlink out of the checkout passes validation and would
+            // otherwise be swept from outside the repository — breaking the
+            // reproducibility the guard exists to protect. A missing or
+            // otherwise unresolvable source stays the soft skip `scan_dir`
+            // already applies.
+            let source = if source.exists() {
+                match contained(canonical_checkout.as_deref(), &source) {
+                    Contained::Inside(canonical) => canonical,
+                    Contained::Escape => anyhow::bail!(
+                        "repo {} skills directory {dir:?} resolves outside the \
+                         checkout; a skill source must stay inside its repository",
+                        repo.path
+                    ),
+                    Contained::Unresolvable => source,
+                }
+            } else {
+                source
+            };
             for target in scan_dir(&source)? {
                 let name = dir_name(&target)?;
                 pending.remove(name.as_str());
                 if !config.admits(&name) {
                     continue;
+                }
+                // Canonicalising the source parent does not resolve its
+                // children, so a skill entry that is itself an escaping symlink
+                // must be checked in its own right before it is admitted.
+                match contained(canonical_checkout.as_deref(), &target) {
+                    Contained::Inside(_) => {}
+                    Contained::Escape => anyhow::bail!(
+                        "repo {} skill {name:?} resolves outside the checkout; \
+                         a skill must stay inside its repository",
+                        repo.path
+                    ),
+                    Contained::Unresolvable => continue,
                 }
                 candidates.push(Skill {
                     name,
@@ -283,6 +325,34 @@ pub fn user_owned_directories(root: &Path) -> Result<Vec<UserOwnedDirectory>> {
         found.extend(harness_directories);
     }
     Ok(found)
+}
+
+/// The outcome of resolving a skill source or entry against its checkout root.
+enum Contained {
+    /// Resolves inside the checkout; the canonical path is safe to sweep.
+    Inside(PathBuf),
+    /// Resolves outside the checkout — the escape the guard rejects.
+    Escape,
+    /// Cannot be canonicalised for a reason that is not an escape (the checkout
+    /// root is unresolved, a permission error, or a path that vanished after the
+    /// caller's existence check). Treated as the soft skip a missing source
+    /// already receives, never as an escape.
+    Unresolvable,
+}
+
+/// Confirm a skill source or entry stays inside its member checkout. This is the
+/// filesystem half of `manifest::check_contained`: that guard is purely lexical
+/// and cannot see a symlink that leaves the checkout, so the real-path check
+/// happens here, at the sweep, over the already-canonical `root`.
+fn contained(root: Option<&Path>, path: &Path) -> Contained {
+    let (Some(root), Ok(resolved)) = (root, std::fs::canonicalize(path)) else {
+        return Contained::Unresolvable;
+    };
+    if resolved.starts_with(root) {
+        Contained::Inside(resolved)
+    } else {
+        Contained::Escape
+    }
 }
 
 /// Immediate sub-directories that are skills, sorted for deterministic output.
@@ -581,6 +651,91 @@ mod tests {
         assert!(
             resolution.unmatched_only.is_empty(),
             "a matched-but-shadowed skill still satisfies its `only` entry"
+        );
+    }
+
+    #[test]
+    fn rejects_a_configured_dir_symlinking_outside_the_checkout() {
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
+        let root = base.join("ws");
+        let checkout = root.join("member");
+        std::fs::create_dir_all(&checkout).expect("checkout");
+        let outside = base.join("outside");
+        seed_skill(&outside, "leaked");
+        std::os::unix::fs::symlink(&outside, checkout.join("escape")).expect("escape link");
+
+        let err = resolve(&root, &manifest("skills = { dirs = [\"escape\"] }\n"))
+            .expect_err("a symlinked source that leaves the checkout is rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("member"), "names the repo: {msg}");
+        assert!(msg.contains("escape"), "names the dir: {msg}");
+        assert!(
+            msg.contains("outside the checkout"),
+            "explains the escape: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_defaulted_dir_symlinking_outside_the_checkout() {
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
+        let root = base.join("ws");
+        // A defaulted `.claude/skills` bypasses the lexical `check_contained`
+        // guard entirely, so the resolve-time check is its only containment.
+        let claude = root.join("member/.claude");
+        std::fs::create_dir_all(&claude).expect("member/.claude");
+        let outside = base.join("outside");
+        seed_skill(&outside, "leaked");
+        std::os::unix::fs::symlink(&outside, claude.join("skills")).expect("escape link");
+
+        let err = resolve(&root, &manifest("skills = true\n"))
+            .expect_err("a defaulted source symlink that leaves the checkout is rejected");
+        assert!(err.to_string().contains("outside the checkout"));
+    }
+
+    #[test]
+    fn rejects_a_skill_entry_symlinking_outside_the_checkout() {
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
+        let root = base.join("ws");
+        // A contained source dir whose individual entry escapes: canonicalising
+        // the source parent does not resolve its children, so the entry needs
+        // its own check.
+        let source = root.join("member/src");
+        std::fs::create_dir_all(&source).expect("member/src");
+        let outside = base.join("outside");
+        seed_skill(&outside, "realskill");
+        std::os::unix::fs::symlink(outside.join("realskill"), source.join("x"))
+            .expect("escape entry link");
+
+        let err = resolve(&root, &manifest("skills = { dirs = [\"src\"] }\n"))
+            .expect_err("a skill entry that leaves the checkout is rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("member"), "names the repo: {msg}");
+        assert!(msg.contains("\"x\""), "names the entry: {msg}");
+        assert!(
+            msg.contains("outside the checkout"),
+            "explains the escape: {msg}"
+        );
+    }
+
+    #[test]
+    fn admits_a_dir_symlink_that_stays_inside_the_checkout() {
+        let base = tempfile::tempdir().expect("temp dir");
+        let base = base.path();
+        let root = base.join("ws");
+        // Real skills live inside the checkout; a symlink pointing at them,
+        // also inside the checkout, still resolves reproducibly from the tree.
+        seed_skill(&root, "member/real/deploy");
+        std::os::unix::fs::symlink(root.join("member/real"), root.join("member/link"))
+            .expect("inside link");
+
+        let resolution = resolve(&root, &manifest("skills = { dirs = [\"link\"] }\n"))
+            .expect("an inside-checkout symlink resolves");
+        assert!(
+            resolution.linked.iter().any(|s| s.name == "deploy"),
+            "the symlinked-but-contained source sweeps normally"
         );
     }
 

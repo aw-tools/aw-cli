@@ -5,6 +5,7 @@
 //! garden's job; `aw` owns the manifest, skill linking, and reporting.
 
 mod adopt;
+mod delivery;
 mod garden;
 mod git;
 mod manifest;
@@ -422,6 +423,12 @@ fn doctor(root: &Path) -> Result<bool> {
                 );
             }
         }
+        // A member's delivery model is authoritative in its own instruction
+        // files, read live (decision 45). Surface whether one is declared as a
+        // plain informational line, outside the `check` closure: an absent model
+        // is the conservative default, never a fault, so it must not touch `ok`.
+        let declared = delivery::declared_in(&root.join(&repo.path));
+        println!("{}", reporting::doctor_delivery_model(&repo.path, declared));
     }
 
     for harness in skills::HARNESSES {
