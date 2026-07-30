@@ -15,9 +15,16 @@ path = "src/main.rs"
 # Error context across subprocess and filesystem boundaries.
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# Group-wide signalling: std's Child::kill reaches only the leader PID, so
+# terminating the child's whole process group on a timeout needs a negative-PID
+# kill, which rustix wraps without reintroducing unsafe.
+rustix = { version = "1", features = ["process"] }
 # Manifest is the single source of truth; parsed once into typed structs.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Forward an interactive Ctrl-C to the bounded child group: the thread-based
+# API reacts off the handler, so the group kill runs without unsafe.
+signal-hook = "0.3"
 toml = "0.9"
 toml_edit = "0.22"
 
