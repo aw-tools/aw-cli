@@ -1072,7 +1072,7 @@ git -C "$WORK/status-drift.workspace/alpha" \
 "$AW" status --json "$WORK/status-drift.workspace" >"$WORK/status-drift.json"
 assert "status reports exactly one drifted config key" \
 	"$(awk '/^configuration drift$/ { section = 1; next }
-		/^unlisted checkouts$/ { section = 0 }
+		/^hook health$/ { section = 0 }
 		section && NF { count++ }
 		END { print count + 0 }' "$WORK/status-drift-human.log")" 1
 assert "status names the drifted repository and key" \

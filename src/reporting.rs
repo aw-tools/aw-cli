@@ -232,6 +232,19 @@ pub fn doctor_pre_commit_hook(configured: Option<&str>) -> DoctorCheck {
     DoctorCheck::new("pre-commit hook", detail, remedy)
 }
 
+pub fn doctor_hook_live(hook: &Path, live: bool) -> DoctorCheck {
+    let detail = if live {
+        format!("{} is executable", hook.display())
+    } else {
+        format!("{} is missing or not executable", hook.display())
+    };
+    DoctorCheck::new(
+        "hook script",
+        detail,
+        "restore the hook or `chmod +x` it, then run `bin/install-hooks`",
+    )
+}
+
 pub fn doctor_remote_reachable(path: &str) -> DoctorCheck {
     DoctorCheck::new("remote", format!("{path:<24} reachable"), "")
 }
@@ -294,4 +307,40 @@ pub fn doctor_skill_links(dangling: usize) -> DoctorCheck {
 
 pub fn doctor_dangling_link(path: &Path) -> String {
     format!("      {:<22} {}", "", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_commit_hook_unset_points_at_bootstrap() {
+        let check = doctor_pre_commit_hook(None);
+        assert_eq!(check.detail, "core.hooksPath is unset");
+        assert_eq!(check.remedy, "run `aw bootstrap`");
+    }
+
+    #[test]
+    fn pre_commit_hook_redirected_points_at_unset() {
+        let check = doctor_pre_commit_hook(Some("hooks"));
+        assert_eq!(check.detail, "core.hooksPath = hooks");
+        assert_eq!(
+            check.remedy,
+            "unset core.hooksPath, then run `aw bootstrap`"
+        );
+    }
+
+    #[test]
+    fn hook_live_renders_fail_with_remedy_when_dead() {
+        let check = doctor_hook_live(Path::new("/w/.githooks/pre-commit"), false);
+        assert!(doctor_check(false, &check).starts_with("FAIL"));
+        assert!(check.detail.contains("missing or not executable"));
+        assert!(!check.remedy.is_empty());
+    }
+
+    #[test]
+    fn hook_live_renders_pass_when_live() {
+        let check = doctor_hook_live(Path::new("/w/.githooks/pre-commit"), true);
+        assert!(doctor_check(true, &check).starts_with("PASS"));
+    }
 }

@@ -469,6 +469,77 @@ impl ReportSection for ConfigurationDriftSection {
     }
 }
 
+/// A workspace hook that is configured but dead: `core.hooksPath` points at
+/// `.githooks`, yet `.githooks/pre-commit` is missing or not executable. This
+/// is distinct from configuration-key drift — the redirect is correct, the file
+/// is not — so it reports on its own rather than as a drifted key.
+struct HookHealthSection {
+    dead_hook: Option<String>,
+}
+
+impl HookHealthSection {
+    fn inspect(repositories: &[RepositoryState]) -> Result<Self> {
+        let mut dead_hook = None;
+        for repository in repositories {
+            if !matches!(repository.kind, RepositoryKind::Workspace)
+                || matches!(repository.state, CheckoutState::Absent)
+            {
+                continue;
+            }
+            let hooks_dir = repository.path.join(crate::HOOKS_DIR);
+            if hooks_dir.is_dir()
+                && git::config_value(&repository.path, crate::HOOKS_CONFIG_KEY)?.as_deref()
+                    == Some(crate::HOOKS_DIR)
+                && !crate::hook_is_live(&hooks_dir)
+            {
+                dead_hook = Some(format!("{}/{}", crate::HOOKS_DIR, crate::HOOKS_PRE_COMMIT));
+            }
+        }
+        Ok(Self { dead_hook })
+    }
+}
+
+impl ReportSection for HookHealthSection {
+    fn name(&self) -> &'static str {
+        "hook_health"
+    }
+
+    fn has_finding(&self) -> bool {
+        self.dead_hook.is_some()
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("hook health\n");
+        if let Some(hook) = &self.dead_hook {
+            writeln!(
+                output,
+                "{:<24} {hook} missing or not executable",
+                "workspace"
+            )
+            .expect("writing to a string cannot fail");
+        }
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            repository: &'a str,
+            hook: &'a str,
+        }
+
+        serde_json::to_value(
+            self.dead_hook
+                .iter()
+                .map(|hook| Entry {
+                    repository: "workspace",
+                    hook,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("hook-health entries always serialise")
+    }
+}
+
 struct UnlistedCheckoutsSection {
     paths: Vec<String>,
 }
@@ -778,6 +849,7 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     let repositories = inspect_repositories(root, &manifest)?;
     let ahead_behind = AheadBehindSection::inspect(&repositories)?;
     let configuration_drift = ConfigurationDriftSection::inspect(&repositories, &manifest)?;
+    let hook_health = HookHealthSection::inspect(&repositories)?;
     let unlisted_checkouts = UnlistedCheckoutsSection::inspect(root, &manifest)?;
     let skill_links = SkillLinkSection::inspect(root, &manifest)?;
     let mut report = StatusReport::new(manifest.workspace.name);
@@ -787,6 +859,7 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     report.add_section(WorkingTreeSection { repositories });
     report.add_section(ahead_behind);
     report.add_section(configuration_drift);
+    report.add_section(hook_health);
     report.add_section(unlisted_checkouts);
     report.add_section(skill_links);
     Ok(report)

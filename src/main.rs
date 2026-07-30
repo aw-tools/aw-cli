@@ -22,6 +22,7 @@ use std::process::ExitCode;
 
 const HOOKS_DIR: &str = ".githooks";
 const HOOKS_CONFIG_KEY: &str = "core.hooksPath";
+const HOOKS_PRE_COMMIT: &str = "pre-commit";
 
 #[derive(Parser)]
 #[command(name = "aw", version, about, long_about = None)]
@@ -324,6 +325,18 @@ fn bootstrap(root: &Path) -> Result<bool> {
     Ok(missing == 0)
 }
 
+/// Whether `<hooks_dir>/pre-commit` would actually run: a regular file with the
+/// owner-execute bit set. A proxy for git's own `access(X_OK)` gate — an absent
+/// file, a broken symlink, or a directory named `pre-commit` all read as dead —
+/// matched to the common single-owner `0755` workspace hook rather than to
+/// git's full permission logic. `metadata` follows symlinks, so a live link to
+/// an executable target reads live and a dangling one reads dead.
+fn hook_is_live(hooks_dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(hooks_dir.join(HOOKS_PRE_COMMIT))
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o100 != 0)
+}
+
 fn doctor(root: &Path) -> Result<bool> {
     let mut ok = true;
     let mut check = |pass: bool, report: reporting::DoctorCheck| {
@@ -363,13 +376,24 @@ fn doctor(root: &Path) -> Result<bool> {
         reporting::doctor_generated_trees(&generated),
     );
 
-    if root.join(HOOKS_DIR).is_dir() {
+    let hooks_dir = root.join(HOOKS_DIR);
+    if hooks_dir.is_dir() {
         let configured = git::config_value(root, HOOKS_CONFIG_KEY)?;
         let pass = configured.as_deref() == Some(HOOKS_DIR);
         check(
             pass,
             reporting::doctor_pre_commit_hook(configured.as_deref()),
         );
+        // Only when the redirect is correct does a dead hook become the live
+        // concern; an unset or redirected `hooksPath` already carries its own
+        // actionable remedy above.
+        if pass {
+            let live = hook_is_live(&hooks_dir);
+            check(
+                live,
+                reporting::doctor_hook_live(&hooks_dir.join(HOOKS_PRE_COMMIT), live),
+            );
+        }
     }
 
     let manifest = Manifest::load(root)?;
@@ -459,6 +483,44 @@ mod tests {
             !target.exists(),
             "an invalid explicit name must not create the target directory"
         );
+    }
+
+    fn write_hook(dir: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = dir.join(HOOKS_PRE_COMMIT);
+        std::fs::write(&hook, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn hook_is_live_for_an_executable_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        write_hook(temp.path(), 0o755);
+        assert!(hook_is_live(temp.path()));
+    }
+
+    #[test]
+    fn hook_is_dead_when_not_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        write_hook(temp.path(), 0o644);
+        assert!(!hook_is_live(temp.path()));
+    }
+
+    #[test]
+    fn hook_is_dead_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!hook_is_live(temp.path()));
+    }
+
+    #[test]
+    fn hook_is_dead_for_a_broken_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            temp.path().join("nowhere"),
+            temp.path().join(HOOKS_PRE_COMMIT),
+        )
+        .unwrap();
+        assert!(!hook_is_live(temp.path()));
     }
 
     #[test]
