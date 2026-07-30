@@ -8,8 +8,10 @@ use anyhow::{Context, Result};
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long `aw init` waits for each template Git operation to complete.
@@ -247,16 +249,110 @@ struct BoundedOutput {
     stderr: String,
 }
 
+/// SIGKILL an entire process group by its leader PID. Paired with a child
+/// spawned via `process_group(0)` — so its PID is also the group id — this
+/// reaps the transport and credential helpers `git` forks into the group, which
+/// a leader-only `Child::kill` would leave orphaned holding sockets or a TTY.
+///
+/// A self-daemonizing helper that calls `setsid` (an SSH `ControlPersist`
+/// master, a credential-cache daemon) leaves the group by design and is out of
+/// reach; `GIT_ASKPASS`/`GIT_TERMINAL_PROMPT` already defang the credential
+/// case.
+fn kill_process_group(leader_pid: u32) {
+    let Ok(raw) = i32::try_from(leader_pid) else {
+        return;
+    };
+    let Some(pgid) = rustix::process::Pid::from_raw(raw) else {
+        return;
+    };
+    let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
+}
+
+/// PID (== process-group id) of the bounded git child currently running, or 0
+/// when none. Read by the interrupt forwarder so a Ctrl-C tears the child group
+/// down instead of orphaning it — the same teardown a timeout performs.
+static ACTIVE_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// Record the active bounded child group for the interrupt forwarder, clearing
+/// it on drop so an interrupt after the child is reaped kills nothing. Only one
+/// bounded child runs at a time, so a single slot suffices.
+struct ActiveGroup;
+
+impl ActiveGroup {
+    fn set(leader_pid: u32) -> Self {
+        ACTIVE_GROUP.store(i32::try_from(leader_pid).unwrap_or(0), Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ActiveGroup {
+    fn drop(&mut self) {
+        ACTIVE_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+/// The child group an interrupt should forward to given a recorded pgid, or
+/// `None` for the unset (0) or invalid sentinel. Split from the load so the
+/// guard is unit-testable without touching the shared slot.
+fn interrupt_target_from(pgid: i32) -> Option<u32> {
+    if pgid > 0 {
+        u32::try_from(pgid).ok()
+    } else {
+        None
+    }
+}
+
+/// Forward an interactive interrupt to the active bounded child group.
+///
+/// `process_group(0)` moves each bounded git child into its own group, out of
+/// the terminal's foreground group, so a Ctrl-C would otherwise reach only `aw`
+/// and orphan the child and its helpers. This installs a listener thread that,
+/// on SIGINT or SIGTERM, kills the recorded child group the same way a timeout
+/// does, then exits with the conventional signal status. The reaction runs off
+/// the handler, so the group kill needs no async-signal-safety dance.
+pub fn install_interrupt_forwarder() {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        // The first interrupt is terminal: forward it to the child group, then
+        // exit with the conventional status. `aw` does no interruptible work
+        // that should survive a second Ctrl-C.
+        if let Some(signal) = signals.forever().next() {
+            let recorded = ACTIVE_GROUP.load(Ordering::SeqCst);
+            if let Some(leader) = interrupt_target_from(recorded) {
+                kill_process_group(leader);
+            }
+            std::process::exit(128 + signal);
+        }
+    });
+}
+
 /// Run a child with a deadline, continuously draining but retaining only a
-/// bounded diagnostic.
+/// bounded diagnostic. The child leads its own process group so a timeout can
+/// terminate the whole group, not just the `git` leader.
 fn run_bounded(command: &mut Command, timeout: Duration) -> io::Result<Option<BoundedOutput>> {
     let (mut stderr, stderr_writer) = UnixStream::pair()?;
     stderr.set_nonblocking(true)?;
     let stderr_writer: OwnedFd = stderr_writer.into();
-    let mut child = command.stderr(Stdio::from(stderr_writer)).spawn()?;
+    let mut child = command
+        .stderr(Stdio::from(stderr_writer))
+        .process_group(0)
+        .spawn()?;
+    let active = ActiveGroup::set(child.id());
     let mut bytes = Vec::new();
     let mut truncated = false;
-    let status = wait_for_child(&mut child, &mut stderr, &mut bytes, &mut truncated, timeout)?;
+    let status = wait_for_child(
+        &mut child,
+        &mut stderr,
+        &mut bytes,
+        &mut truncated,
+        timeout,
+        active,
+    )?;
     drain_stderr(&mut stderr, &mut bytes, &mut truncated)?;
     let mut stderr = String::from_utf8_lossy(&bytes).into_owned();
     if truncated {
@@ -285,21 +381,30 @@ fn drain_stderr(
     }
 }
 
+/// Takes ownership of the `ActiveGroup` guard and drops it the instant the
+/// child is reaped: once reaped the pgid can be recycled, so the interrupt
+/// forwarder must stop advertising it before the caller spends time draining
+/// stderr, or a Ctrl-C then could signal a stranger's group.
 fn wait_for_child(
     child: &mut Child,
     stderr: &mut UnixStream,
     bytes: &mut Vec<u8>,
     truncated: &mut bool,
     timeout: Duration,
+    active: ActiveGroup,
 ) -> io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + timeout;
     loop {
         drain_stderr(stderr, bytes, truncated)?;
         match child.try_wait()? {
-            Some(status) => return Ok(Some(status)),
+            Some(status) => {
+                drop(active);
+                return Ok(Some(status));
+            }
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_group(child.id());
                 let _ = child.wait();
+                drop(active);
                 return Ok(None);
             }
             None => std::thread::sleep(Duration::from_millis(50)),
@@ -464,16 +569,22 @@ pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "true");
 
-    let Some(output) = run_bounded(&mut command, FETCH_TIMEOUT)
-        .with_context(|| format!("waiting for git fetch in {}", dir.display()))?
-    else {
-        return Ok(FetchOutcome::Failed(format!(
+    let result = run_bounded(&mut command, FETCH_TIMEOUT)
+        .with_context(|| format!("waiting for git fetch in {}", dir.display()))?;
+    Ok(fetch_outcome(result, FETCH_TIMEOUT))
+}
+
+/// Map a bounded fetch result to an outcome. Split from `fetch` so the timeout
+/// arm (`None`) can be unit-tested directly, without an unresponsive remote.
+fn fetch_outcome(result: Option<BoundedOutput>, timeout: Duration) -> FetchOutcome {
+    let Some(output) = result else {
+        return FetchOutcome::Failed(format!(
             "fetch did not complete within {}s",
-            FETCH_TIMEOUT.as_secs()
-        )));
+            timeout.as_secs()
+        ));
     };
     if output.status.success() {
-        return Ok(FetchOutcome::Fetched);
+        return FetchOutcome::Fetched;
     }
     let detail = output
         .stderr
@@ -483,7 +594,7 @@ pub fn fetch(dir: &Path) -> Result<FetchOutcome> {
             || format!("git fetch exited with {}", output.status),
             |line| line.trim().to_owned(),
         );
-    Ok(FetchOutcome::Failed(detail))
+    FetchOutcome::Failed(detail)
 }
 
 /// Whether a remote is reachable. When `branch` is set, probes that branch's
@@ -502,11 +613,13 @@ pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
         .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "true")
+        .process_group(0)
         .spawn();
 
     let Ok(mut child) = child else {
         return RemoteProbe::Unreachable("could not run git".to_owned());
     };
+    let active = ActiveGroup::set(child.id());
 
     // Poll for exit; kill the child if it outlives the deadline. `ls-remote`
     // writes only a line or two to stderr, well under the pipe buffer, so
@@ -515,6 +628,9 @@ pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Reaped: drop the interrupt guard before reading stderr, so a
+                // Ctrl-C cannot forward to this child's now-recyclable pgid.
+                drop(active);
                 let mut stderr = String::new();
                 if let Some(mut pipe) = child.stderr.take() {
                     let _ = pipe.read_to_string(&mut stderr);
@@ -531,8 +647,9 @@ pub fn probe_remote(url: &str, branch: Option<&str>) -> RemoteProbe {
                 return classify_probe(status.success(), stderr);
             }
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_group(child.id());
                 let _ = child.wait();
+                drop(active);
                 return RemoteProbe::Unreachable(format!(
                     "no response within {}s",
                     PROBE_TIMEOUT.as_secs()
@@ -691,5 +808,109 @@ mod tests {
             output.stderr.len(),
             STDERR_LIMIT + "\n[stderr truncated]".len()
         );
+    }
+
+    #[test]
+    fn bounded_timeout_kills_a_forked_grandchild() {
+        // The deterministic proof that the *group* is torn down, not just the
+        // leader: the shell forks a long-sleeping grandchild that shares its
+        // process group (non-interactive `sh` runs with job control off),
+        // records the grandchild PID, then blocks past the timeout itself so
+        // `run_bounded` takes the kill path. A leader-only kill would leave the
+        // grandchild alive; only the group kill reaches it.
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("grandchild.pid");
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(format!(
+            "sleep 30 & printf '%s' \"$!\" > '{}'; wait",
+            pidfile.display()
+        ));
+
+        let output = run_bounded(&mut command, Duration::from_millis(100)).unwrap();
+        assert!(output.is_none(), "the command should have timed out");
+
+        let grandchild = read_pid(&pidfile);
+        let pid = rustix::process::Pid::from_raw(grandchild).expect("valid pid");
+
+        // The grandchild reparents to init after the leader dies and is reaped
+        // there, so ESRCH appears only after a reaping chain — poll for death
+        // rather than checking once.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match rustix::process::getpgid(Some(pid)) {
+                Err(rustix::io::Errno::SRCH) => break,
+                _ => assert!(
+                    Instant::now() < deadline,
+                    "grandchild {grandchild} survived the group kill"
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Poll a pidfile until it holds a parseable PID; the shell writes it
+    /// promptly but not before `run_bounded` returns.
+    fn read_pid(path: &Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    return pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild never reported its pid"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn exit_status(raw: i32) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt as _;
+        ExitStatus::from_raw(raw)
+    }
+
+    #[test]
+    fn fetch_timeout_maps_to_failed() {
+        let outcome = fetch_outcome(None, Duration::from_secs(120));
+        let FetchOutcome::Failed(message) = outcome else {
+            panic!("timeout should map to Failed");
+        };
+        assert!(
+            message.contains("120s"),
+            "message names the elapsed seconds"
+        );
+    }
+
+    #[test]
+    fn fetch_nonzero_exit_maps_to_failed_with_stderr() {
+        let output = BoundedOutput {
+            status: exit_status(1 << 8),
+            stderr: "\nfatal: could not read from remote\nsecond line\n".to_owned(),
+        };
+        let FetchOutcome::Failed(message) = fetch_outcome(Some(output), FETCH_TIMEOUT) else {
+            panic!("a non-zero exit should map to Failed");
+        };
+        assert_eq!(message, "fatal: could not read from remote");
+    }
+
+    #[test]
+    fn interrupt_target_guards_the_unset_sentinel() {
+        assert_eq!(interrupt_target_from(0), None);
+        assert_eq!(interrupt_target_from(-1), None);
+        assert_eq!(interrupt_target_from(4321), Some(4321));
+    }
+
+    #[test]
+    fn fetch_success_maps_to_fetched() {
+        let output = BoundedOutput {
+            status: exit_status(0),
+            stderr: String::new(),
+        };
+        assert!(matches!(
+            fetch_outcome(Some(output), FETCH_TIMEOUT),
+            FetchOutcome::Fetched
+        ));
     }
 }

@@ -79,6 +79,10 @@ enum Verb {
 }
 
 fn main() -> ExitCode {
+    // A Ctrl-C during a bounded git operation must tear down the child's
+    // process group, which `process_group(0)` has moved out of the terminal's
+    // foreground group; without this the child and its helpers would orphan.
+    git::install_interrupt_forwarder();
     match run() {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
