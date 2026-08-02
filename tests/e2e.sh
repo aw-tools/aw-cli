@@ -1241,8 +1241,11 @@ assert "sync continues fetching after a failure" \
 	"$(grep -c '^-C .*/skills fetch ' "$WORK/sync-git.log")" 1
 assert "sync skips an absent member" \
 	"$(grep -c '^-C .*/missing fetch ' "$WORK/sync-git.log" || true)" 0
-assert "sync does not fetch the workspace repository" \
+assert "sync skips a workspace repository with no origin" \
 	"$(grep -c "^-C $WORK/demo.workspace fetch " "$WORK/sync-git.log" || true)" 0
+assert "sync reports the origin-less workspace as skipped" \
+	"$(grep -c '^repo[[:space:]]*workspace[[:space:]]*no origin, skipped' \
+		"$WORK/sync.log")" 1
 assert "sync does not fetch a workspace-repository alias" \
 	"$(grep -c "^-C $WORK/demo.workspace/workspace-alias fetch " \
 		"$WORK/sync-git.log" || true)" 0
@@ -1301,6 +1304,35 @@ if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-clean.log" 2>&1; then
 else
 	fail "sync exits zero when every present member fetches"
 fi
+
+# The workspace layer is a repository too, and status reports its ahead/behind
+# beside the members'. Give it an origin, advance that origin, and require sync
+# to refresh the remote-tracking ref without moving the checkout.
+git -C "$WORK/demo.workspace" add README.md
+git -C "$WORK/demo.workspace" -c user.name=t -c user.email=t@t \
+	commit -qm "workspace layer"
+git init -q --bare "$WORK/workspace-origin.git"
+git -C "$WORK/workspace-origin.git" symbolic-ref HEAD refs/heads/trunk
+git -C "$WORK/demo.workspace" remote add origin "$WORK/workspace-origin.git"
+git -C "$WORK/demo.workspace" push -q origin HEAD:trunk
+git clone -q "$WORK/workspace-origin.git" "$WORK/workspace-upstream"
+echo "layer update" >>"$WORK/workspace-upstream/README.md"
+git -C "$WORK/workspace-upstream" add README.md
+git -C "$WORK/workspace-upstream" -c user.name=t -c user.email=t@t \
+	commit -qm "layer update"
+git -C "$WORK/workspace-upstream" push -q origin HEAD:trunk
+WORKSPACE_REMOTE_HEAD="$(git -C "$WORK/workspace-upstream" rev-parse HEAD)"
+WORKSPACE_HEAD_BEFORE="$(git -C "$WORK/demo.workspace" rev-parse HEAD)"
+
+"$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace.log" 2>&1
+assert "sync reports the workspace layer fetched" \
+	"$(grep -c '^repo[[:space:]]*workspace[[:space:]]*fetched' \
+		"$WORK/sync-workspace.log")" 1
+assert "sync fetches the workspace layer's new remote commit" \
+	"$(git -C "$WORK/demo.workspace" rev-parse refs/remotes/origin/trunk)" \
+	"$WORKSPACE_REMOTE_HEAD"
+assert "sync leaves the workspace layer HEAD unchanged" \
+	"$(git -C "$WORK/demo.workspace" rev-parse HEAD)" "$WORKSPACE_HEAD_BEFORE"
 }
 
 # --- read-only invariant ------------------------------------------------------

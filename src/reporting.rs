@@ -107,6 +107,10 @@ pub fn sync_repo_skipped(path: &str) -> String {
     format!("repo      {path:<24} not present, skipped")
 }
 
+pub fn sync_repo_no_origin(path: &str) -> String {
+    format!("repo      {path:<24} no origin, skipped")
+}
+
 pub fn sync_skills(harness: &str, changed: usize) -> String {
     format!("skills    {harness:<12} {changed} link(s) changed")
 }

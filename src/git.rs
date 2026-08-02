@@ -549,6 +549,12 @@ pub fn set_config_if_unset(dir: &Path, key: &str, value: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Report whether the repository has an `origin` remote configured. A workspace
+/// without one has nothing to fetch and is not a failure.
+pub fn has_origin(dir: &Path) -> Result<bool> {
+    Ok(config_value(dir, "remote.origin.url")?.is_some())
+}
+
 /// Fetch origin branches into remote-tracking refs without changing the
 /// repository's working tree or checked-out commit.
 pub fn fetch(dir: &Path) -> Result<FetchOutcome> {

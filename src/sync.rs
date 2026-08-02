@@ -9,6 +9,10 @@ use crate::{
 use anyhow::Result;
 use std::path::Path;
 
+/// Name the workspace root reports under, matching `aw status`'s own label for
+/// it.
+const WORKSPACE_LABEL: &str = "workspace";
+
 /// Fetch every present member and re-run skill linking without changing a
 /// member's working tree or checked-out commit.
 pub fn run(root: &Path) -> Result<bool> {
@@ -18,6 +22,24 @@ pub fn run(root: &Path) -> Result<bool> {
     let mut present = 0;
     let mut skipped = 0;
     let mut failed = 0;
+
+    // The workspace root is a repository too, and `aw status` reports its
+    // ahead/behind alongside the members'. Fetch it here so that report reads a
+    // ref something refreshes.
+    if git::has_origin(root)? {
+        present += 1;
+        match git::fetch(root)? {
+            FetchOutcome::Fetched => println!("{}", reporting::sync_repo_fetched(WORKSPACE_LABEL)),
+            FetchOutcome::Failed(why) => {
+                failed += 1;
+                println!("{}", reporting::sync_repo_failed(WORKSPACE_LABEL, &why));
+            }
+        }
+    } else {
+        skipped += 1;
+        println!("{}", reporting::sync_repo_no_origin(WORKSPACE_LABEL));
+    }
+
     for repo in &manifest.repos {
         let path = garden::checkout_path(root, &repo.path);
         if !git::is_repo_checked(&path)? {
