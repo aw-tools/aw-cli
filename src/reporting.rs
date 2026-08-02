@@ -107,8 +107,24 @@ pub fn sync_repo_skipped(path: &str) -> String {
     format!("repo      {path:<24} not present, skipped")
 }
 
-pub fn sync_repo_no_origin(path: &str) -> String {
-    format!("repo      {path:<24} no origin, skipped")
+// The workspace layer reports under its own prefix rather than `repo`, so a
+// member may carry any path — including `workspace` — without producing a row
+// indistinguishable from the layer's.
+
+pub fn sync_layer_fetched(label: &str) -> String {
+    format!("layer     {label:<24} fetched")
+}
+
+pub fn sync_layer_failed(label: &str, why: &str) -> String {
+    format!("layer     {label:<24} FAILED — {why}")
+}
+
+pub fn sync_layer_absent(label: &str) -> String {
+    format!("layer     {label:<24} not a repository, skipped")
+}
+
+pub fn sync_layer_no_origin(label: &str) -> String {
+    format!("layer     {label:<24} no origin, skipped")
 }
 
 pub fn sync_skills(harness: &str, changed: usize) -> String {

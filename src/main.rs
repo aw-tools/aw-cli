@@ -67,7 +67,8 @@ enum Verb {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
-    /// Fetch managed repositories and report changes.
+    /// Fetch the workspace layer and managed repositories, and report changes.
+    /// Exits non-zero when any fetch fails, the layer's included.
     Sync {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,

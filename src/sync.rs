@@ -13,8 +13,8 @@ use std::path::Path;
 /// it.
 const WORKSPACE_LABEL: &str = "workspace";
 
-/// Fetch every present member and re-run skill linking without changing a
-/// member's working tree or checked-out commit.
+/// Fetch the workspace layer and every present member, and re-run skill
+/// linking, without changing any working tree or checked-out commit.
 pub fn run(root: &Path) -> Result<bool> {
     let manifest = Manifest::load(root)?;
     println!("{}", reporting::sync_workspace(&manifest.workspace.name));
@@ -25,26 +25,26 @@ pub fn run(root: &Path) -> Result<bool> {
 
     // The workspace root is a repository too, and `aw status` reports its
     // ahead/behind alongside the members'. Fetch it here so that report reads a
-    // ref something refreshes.
-    // Guard on the checkout the same way the member loop does: the root is a
-    // workspace because it carries the manifest, not because it is a
-    // repository, and `git config --local` in a directory that is not one
-    // either fails outright or answers for an enclosing repository.
+    // ref something refreshes. Guard on the checkout the same way the member
+    // loop does: the root is a workspace because it carries the manifest, not
+    // because it is a repository, and `git config --local` in a directory that
+    // is not one either fails outright or answers for an enclosing repository.
+    //
+    // The layer stays out of the three tallies below, which count members only,
+    // and carries its own failure flag into the exit status instead.
+    let mut layer_failed = false;
     if !git::is_repo_checked(root)? {
-        skipped += 1;
-        println!("{}", reporting::sync_repo_skipped(WORKSPACE_LABEL));
+        println!("{}", reporting::sync_layer_absent(WORKSPACE_LABEL));
     } else if git::has_origin(root)? {
-        present += 1;
         match git::fetch(root)? {
-            FetchOutcome::Fetched => println!("{}", reporting::sync_repo_fetched(WORKSPACE_LABEL)),
+            FetchOutcome::Fetched => println!("{}", reporting::sync_layer_fetched(WORKSPACE_LABEL)),
             FetchOutcome::Failed(why) => {
-                failed += 1;
-                println!("{}", reporting::sync_repo_failed(WORKSPACE_LABEL, &why));
+                layer_failed = true;
+                println!("{}", reporting::sync_layer_failed(WORKSPACE_LABEL, &why));
             }
         }
     } else {
-        skipped += 1;
-        println!("{}", reporting::sync_repo_no_origin(WORKSPACE_LABEL));
+        println!("{}", reporting::sync_layer_no_origin(WORKSPACE_LABEL));
     }
 
     for repo in &manifest.repos {
@@ -115,5 +115,5 @@ pub fn run(root: &Path) -> Result<bool> {
             resolution.shadowed.len()
         )
     );
-    Ok(failed == 0)
+    Ok(failed == 0 && !layer_failed)
 }
