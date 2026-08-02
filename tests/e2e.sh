@@ -271,8 +271,9 @@ EOF
 	git -C "$WORK/status.workspace/divergent" add file.txt
 	git -C "$WORK/status.workspace/divergent" -c user.name=t -c user.email=t@t \
 		commit -qm local
+	# Divergent has never been fetched and now has no clone entry either, so it
+	# is the repository whose measurement age cannot be established at all.
 	rm -f "$WORK/status.workspace/divergent/.git/logs/HEAD"
-	rm -f "$WORK/status.workspace/divergent/.git/logs/refs/remotes/origin/main"
 
 	echo 'dirty local' >>"$WORK/status.workspace/dirty/file.txt"
 }
@@ -1351,6 +1352,26 @@ git -C "$WORK/demo.workspace" status --porcelain >"$WORK/workspace.status.after"
 assert "sync leaves the workspace layer porcelain unchanged" \
 	"$(diff -q "$WORK/workspace.status.before" "$WORK/workspace.status.after" \
 		>/dev/null && echo same || echo differs)" same
+
+# The reported age must follow the last fetch, not the last time a ref moved.
+# Discard the remote-tracking reflog and sync again: the second fetch brings
+# nothing new, and status must still call the measurement fresh rather than
+# falling through to the unknown-age hint.
+git -C "$WORK/demo.workspace" branch --set-upstream-to=origin/trunk >/dev/null
+rm -f "$WORK/demo.workspace/.git/logs/refs/remotes/origin/trunk"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-again.log" 2>&1; then
+	pass "sync exits zero on a second workspace-layer fetch"
+else
+	fail "sync exits zero on a second workspace-layer fetch"
+fi
+if "$AW" status "$WORK/demo.workspace" >"$WORK/status-workspace-age.log" 2>&1; then
+	pass "status exits zero after the second workspace-layer fetch"
+else
+	fail "status exits zero after the second workspace-layer fetch"
+fi
+assert "status ages the workspace layer from the fetch, not the last ref move" \
+	"$(grep -Ec '^workspace[[:space:]]+ahead [0-9]+, behind [0-9]+ \(fetched [0-9]+s ago\)$' \
+		"$WORK/status-workspace-age.log")" 1
 
 # A workspace layer that cannot be fetched is reported and fails the command,
 # the same way an unreachable member does.
