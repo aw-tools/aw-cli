@@ -26,7 +26,14 @@ pub fn run(root: &Path) -> Result<bool> {
     // The workspace root is a repository too, and `aw status` reports its
     // ahead/behind alongside the members'. Fetch it here so that report reads a
     // ref something refreshes.
-    if git::has_origin(root)? {
+    // Guard on the checkout the same way the member loop does: the root is a
+    // workspace because it carries the manifest, not because it is a
+    // repository, and `git config --local` in a directory that is not one
+    // either fails outright or answers for an enclosing repository.
+    if !git::is_repo_checked(root)? {
+        skipped += 1;
+        println!("{}", reporting::sync_repo_skipped(WORKSPACE_LABEL));
+    } else if git::has_origin(root)? {
         present += 1;
         match git::fetch(root)? {
             FetchOutcome::Fetched => println!("{}", reporting::sync_repo_fetched(WORKSPACE_LABEL)),

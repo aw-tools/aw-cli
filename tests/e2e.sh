@@ -1333,6 +1333,32 @@ assert "sync fetches the workspace layer's new remote commit" \
 	"$WORKSPACE_REMOTE_HEAD"
 assert "sync leaves the workspace layer HEAD unchanged" \
 	"$(git -C "$WORK/demo.workspace" rev-parse HEAD)" "$WORKSPACE_HEAD_BEFORE"
+
+# A workspace layer that cannot be fetched is reported and fails the command,
+# the same way an unreachable member does.
+git -C "$WORK/demo.workspace" remote set-url origin "$WORK/unreachable.git"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-fail.log" 2>&1; then
+	fail "sync exits non-zero when the workspace layer cannot be fetched"
+else
+	pass "sync exits non-zero when the workspace layer cannot be fetched"
+fi
+assert "sync reports the workspace layer failure" \
+	"$(grep -c '^repo[[:space:]]*workspace[[:space:]]*FAILED' \
+		"$WORK/sync-workspace-fail.log")" 1
+
+# A root that carries the manifest but is not a repository is skipped, never a
+# hard error: status already models that root as absent.
+git -C "$WORK/demo.workspace" remote set-url origin "$WORK/workspace-origin.git"
+mv "$WORK/demo.workspace/.git" "$WORK/workspace-dotgit"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-absent.log" 2>&1; then
+	pass "sync exits zero when the workspace root is not a repository"
+else
+	fail "sync exits zero when the workspace root is not a repository"
+fi
+assert "sync reports a non-repository workspace root as skipped" \
+	"$(grep -c '^repo[[:space:]]*workspace[[:space:]]*not present, skipped' \
+		"$WORK/sync-workspace-absent.log")" 1
+mv "$WORK/workspace-dotgit" "$WORK/demo.workspace/.git"
 }
 
 # --- read-only invariant ------------------------------------------------------
