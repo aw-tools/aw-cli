@@ -59,7 +59,6 @@ pub fn is_dirty(dir: &Path) -> Result<bool> {
 pub struct UpstreamComparison {
     pub ahead: u64,
     pub behind: u64,
-    pub upstream: String,
 }
 
 /// Compare `HEAD` with its tracked upstream using local refs only.
@@ -102,30 +101,39 @@ pub fn upstream_comparison(dir: &Path) -> Result<Option<UpstreamComparison>> {
         "reading ahead/behind counts failed in {}: unexpected output",
         dir.display()
     );
-    Ok(Some(UpstreamComparison {
-        ahead,
-        behind,
-        upstream: upstream.to_owned(),
-    }))
+    Ok(Some(UpstreamComparison { ahead, behind }))
 }
 
-/// Return the newest reflog timestamp for a remote-tracking ref, if retained.
-pub fn newest_remote_reflog_timestamp(dir: &Path, reference: &str) -> Result<Option<u64>> {
-    if !reference.starts_with("refs/remotes/") {
-        return Ok(None);
-    }
-    let output = run(
-        dir,
-        &[
-            "reflog",
-            "show",
-            "-1",
-            "--date=unix",
-            "--format=%gD",
-            reference,
-        ],
-    )?;
-    parse_optional_reflog_timestamp(output.trim(), reference, dir)
+/// Return the time of the last fetch, taken from `FETCH_HEAD`'s modification
+/// time, or `None` when nothing has fetched into this repository yet.
+///
+/// Git rewrites `FETCH_HEAD` on every fetch, including one that brings nothing
+/// new, so this answers "when did we last look" rather than "when did a ref
+/// last move". A remote-tracking reflog answers the latter, which reads as
+/// stale after a successful fetch that found no new commits, and never appears
+/// at all for a remote that has not moved since the clone.
+pub fn last_fetch_timestamp(dir: &Path) -> Result<Option<u64>> {
+    let marker = run(dir, &["rev-parse", "--git-path", "FETCH_HEAD"])?;
+    let marker = Path::new(marker.trim());
+    let marker = if marker.is_absolute() {
+        marker.to_owned()
+    } else {
+        dir.join(marker)
+    };
+    let modified = match std::fs::metadata(&marker) {
+        Ok(metadata) => metadata.modified().with_context(|| {
+            format!("reading FETCH_HEAD modification time in {}", dir.display())
+        })?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting FETCH_HEAD in {}", dir.display()));
+        }
+    };
+    Ok(modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_secs()))
 }
 
 /// Return the timestamp of the clone entry in `HEAD`'s reflog, if retained.
@@ -547,6 +555,12 @@ pub fn set_config_if_unset(dir: &Path, key: &str, value: &str) -> Result<bool> {
     }
     run(dir, &["config", "--local", "--", key, value])?;
     Ok(true)
+}
+
+/// Report whether the repository has an `origin` remote configured. A workspace
+/// without one has nothing to fetch and is not a failure.
+pub fn has_origin(dir: &Path) -> Result<bool> {
+    Ok(config_value(dir, "remote.origin.url")?.is_some())
 }
 
 /// Fetch origin branches into remote-tracking refs without changing the

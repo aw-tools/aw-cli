@@ -289,7 +289,7 @@ impl AheadBehindSection {
             let measurement = match git::upstream_comparison(&repository.path)? {
                 Some(comparison) => {
                     let as_of = if let Some(timestamp) =
-                        git::newest_remote_reflog_timestamp(&repository.path, &comparison.upstream)?
+                        git::last_fetch_timestamp(&repository.path)?
                     {
                         MeasurementAge::Fetched { timestamp }
                     } else if let Some(timestamp) = git::clone_reflog_timestamp(&repository.path)? {

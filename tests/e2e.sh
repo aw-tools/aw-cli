@@ -271,8 +271,9 @@ EOF
 	git -C "$WORK/status.workspace/divergent" add file.txt
 	git -C "$WORK/status.workspace/divergent" -c user.name=t -c user.email=t@t \
 		commit -qm local
+	# Divergent has never been fetched and now has no clone entry either, so it
+	# is the repository whose measurement age cannot be established at all.
 	rm -f "$WORK/status.workspace/divergent/.git/logs/HEAD"
-	rm -f "$WORK/status.workspace/divergent/.git/logs/refs/remotes/origin/main"
 
 	echo 'dirty local' >>"$WORK/status.workspace/dirty/file.txt"
 }
@@ -746,7 +747,11 @@ assert "doctor names the missing configured skills directory" \
 assert "bootstrap warns about the missing configured skills directory" \
 	"$(grep -c 'skills configured skills directory absent does not exist' \
 		"$WORK/bootstrap-missing-dir.log")" 1
-"$AW" sync "$WORK/demo.workspace" >"$WORK/sync-missing-dir.log" 2>&1
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-missing-dir.log" 2>&1; then
+	pass "sync exits zero despite a missing configured skills directory"
+else
+	fail "sync exits zero despite a missing configured skills directory"
+fi
 assert "sync warns about the missing configured skills directory" \
 	"$(grep -c 'skills configured skills directory absent does not exist' \
 		"$WORK/sync-missing-dir.log")" 1
@@ -1241,8 +1246,11 @@ assert "sync continues fetching after a failure" \
 	"$(grep -c '^-C .*/skills fetch ' "$WORK/sync-git.log")" 1
 assert "sync skips an absent member" \
 	"$(grep -c '^-C .*/missing fetch ' "$WORK/sync-git.log" || true)" 0
-assert "sync does not fetch the workspace repository" \
+assert "sync skips a workspace repository with no origin" \
 	"$(grep -c "^-C $WORK/demo.workspace fetch " "$WORK/sync-git.log" || true)" 0
+assert "sync reports the origin-less workspace as skipped" \
+	"$(grep -c '^layer[[:space:]]*workspace[[:space:]]*no origin, skipped' \
+		"$WORK/sync.log")" 1
 assert "sync does not fetch a workspace-repository alias" \
 	"$(grep -c "^-C $WORK/demo.workspace/workspace-alias fetch " \
 		"$WORK/sync-git.log" || true)" 0
@@ -1301,6 +1309,95 @@ if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-clean.log" 2>&1; then
 else
 	fail "sync exits zero when every present member fetches"
 fi
+# The verify tally counts members only; the workspace layer reports its own row
+# and never inflates these numbers.
+assert "sync counts only members in the verify tally" \
+	"$(grep -c '^verify    5 repo(s), 1 skipped, 0 failed,' "$WORK/sync-clean.log")" 1
+
+# The workspace layer is a repository too, and status reports its ahead/behind
+# beside the members'. Give it an origin, advance that origin, and require sync
+# to refresh the remote-tracking ref without moving the checkout.
+git -C "$WORK/demo.workspace" add README.md
+git -C "$WORK/demo.workspace" -c user.name=t -c user.email=t@t \
+	commit -qm "workspace layer"
+git init -q --bare "$WORK/workspace-origin.git"
+git -C "$WORK/workspace-origin.git" symbolic-ref HEAD refs/heads/trunk
+git -C "$WORK/demo.workspace" remote add origin "$WORK/workspace-origin.git"
+git -C "$WORK/demo.workspace" push -q origin HEAD:trunk
+git clone -q "$WORK/workspace-origin.git" "$WORK/workspace-upstream"
+echo "layer update" >>"$WORK/workspace-upstream/README.md"
+git -C "$WORK/workspace-upstream" add README.md
+git -C "$WORK/workspace-upstream" -c user.name=t -c user.email=t@t \
+	commit -qm "layer update"
+git -C "$WORK/workspace-upstream" push -q origin HEAD:trunk
+WORKSPACE_REMOTE_HEAD="$(git -C "$WORK/workspace-upstream" rev-parse HEAD)"
+WORKSPACE_HEAD_BEFORE="$(git -C "$WORK/demo.workspace" rev-parse HEAD)"
+git -C "$WORK/demo.workspace" status --porcelain \
+	>"$WORK/workspace.status.before"
+
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace.log" 2>&1; then
+	pass "sync exits zero when the workspace layer fetches"
+else
+	fail "sync exits zero when the workspace layer fetches"
+fi
+assert "sync reports the workspace layer fetched" \
+	"$(grep -c '^layer[[:space:]]*workspace[[:space:]]*fetched' \
+		"$WORK/sync-workspace.log")" 1
+assert "sync fetches the workspace layer's new remote commit" \
+	"$(git -C "$WORK/demo.workspace" rev-parse refs/remotes/origin/trunk)" \
+	"$WORKSPACE_REMOTE_HEAD"
+assert "sync leaves the workspace layer HEAD unchanged" \
+	"$(git -C "$WORK/demo.workspace" rev-parse HEAD)" "$WORKSPACE_HEAD_BEFORE"
+git -C "$WORK/demo.workspace" status --porcelain >"$WORK/workspace.status.after"
+assert "sync leaves the workspace layer porcelain unchanged" \
+	"$(diff -q "$WORK/workspace.status.before" "$WORK/workspace.status.after" \
+		>/dev/null && echo same || echo differs)" same
+
+# The reported age must follow the last fetch, not the last time a ref moved.
+# Discard the remote-tracking reflog and sync again: the second fetch brings
+# nothing new, and status must still call the measurement fresh rather than
+# falling through to the unknown-age hint.
+git -C "$WORK/demo.workspace" branch --set-upstream-to=origin/trunk >/dev/null
+rm -f "$WORK/demo.workspace/.git/logs/refs/remotes/origin/trunk"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-again.log" 2>&1; then
+	pass "sync exits zero on a second workspace-layer fetch"
+else
+	fail "sync exits zero on a second workspace-layer fetch"
+fi
+if "$AW" status "$WORK/demo.workspace" >"$WORK/status-workspace-age.log" 2>&1; then
+	pass "status exits zero after the second workspace-layer fetch"
+else
+	fail "status exits zero after the second workspace-layer fetch"
+fi
+assert "status ages the workspace layer from the fetch, not the last ref move" \
+	"$(grep -Ec '^workspace[[:space:]]+ahead [0-9]+, behind [0-9]+ \(fetched [0-9]+s ago\)$' \
+		"$WORK/status-workspace-age.log")" 1
+
+# A workspace layer that cannot be fetched is reported and fails the command,
+# the same way an unreachable member does.
+git -C "$WORK/demo.workspace" remote set-url origin "$WORK/unreachable.git"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-fail.log" 2>&1; then
+	fail "sync exits non-zero when the workspace layer cannot be fetched"
+else
+	pass "sync exits non-zero when the workspace layer cannot be fetched"
+fi
+assert "sync reports the workspace layer failure" \
+	"$(grep -c '^layer[[:space:]]*workspace[[:space:]]*FAILED' \
+		"$WORK/sync-workspace-fail.log")" 1
+
+# A root that carries the manifest but is not a repository is skipped, never a
+# hard error: status already models that root as absent.
+git -C "$WORK/demo.workspace" remote set-url origin "$WORK/workspace-origin.git"
+mv "$WORK/demo.workspace/.git" "$WORK/workspace-dotgit"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-workspace-absent.log" 2>&1; then
+	pass "sync exits zero when the workspace root is not a repository"
+else
+	fail "sync exits zero when the workspace root is not a repository"
+fi
+assert "sync reports a non-repository workspace root as skipped" \
+	"$(grep -c '^layer[[:space:]]*workspace[[:space:]]*not a repository, skipped' \
+		"$WORK/sync-workspace-absent.log")" 1
+mv "$WORK/workspace-dotgit" "$WORK/demo.workspace/.git"
 }
 
 # --- read-only invariant ------------------------------------------------------
