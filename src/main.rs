@@ -5,6 +5,7 @@
 //! garden's job; `aw` owns the manifest, skill linking, and reporting.
 
 mod adopt;
+mod agents;
 mod delivery;
 mod garden;
 mod git;
@@ -313,6 +314,11 @@ fn bootstrap(root: &Path) -> Result<bool> {
         );
     }
 
+    // Phase 3b — agent definitions.
+    let agent_resolution = agents::resolve(root, &manifest)?;
+    let agent_changed = agents::link(root, &agent_resolution)?;
+    report_agent_resolution(root, agent_changed, &agent_resolution);
+
     // Phase 4 — verify.
     let missing = manifest
         .repos
@@ -329,6 +335,38 @@ fn bootstrap(root: &Path) -> Result<bool> {
         )
     );
     Ok(missing == 0)
+}
+
+/// Print the agent-definition portion of `aw bootstrap`'s output. Split out of
+/// `bootstrap` to keep that function under clippy's line-count lint.
+fn report_agent_resolution(root: &Path, changed: usize, resolution: &agents::Resolution) {
+    println!("{}", reporting::bootstrap_agents(changed));
+    for agent in &resolution.linked {
+        println!("{}", reporting::bootstrap_agent(&agent.name, &agent.repo));
+    }
+    for (loser, winner_repo) in &resolution.shadowed {
+        let path = loser.target.strip_prefix(root).unwrap_or(&loser.target);
+        println!(
+            "{}",
+            reporting::bootstrap_agent_shadowed(
+                &loser.name,
+                &path.display().to_string(),
+                winner_repo
+            )
+        );
+    }
+    for missing in &resolution.missing_dirs {
+        println!(
+            "{}",
+            reporting::bootstrap_missing_agent_dir(&missing.repo, &missing.dir)
+        );
+    }
+    for unmatched in &resolution.unmatched_only {
+        println!(
+            "{}",
+            reporting::bootstrap_unmatched_agent_only(&unmatched.repo, &unmatched.entry)
+        );
+    }
 }
 
 /// Whether `<hooks_dir>/pre-commit` would actually run: a regular file with the

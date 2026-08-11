@@ -474,7 +474,7 @@ assert "second bootstrap changes nothing on disk" "$(
 assert "second bootstrap regenerates nothing" \
 	"$(grep -c 'trees     unchanged' "$WORK/boot2.log")" 1
 assert "second bootstrap relinks nothing" \
-	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 2
+	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 3
 assert "second bootstrap moves no HEAD" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)" "$HEAD_BEFORE"
 }
