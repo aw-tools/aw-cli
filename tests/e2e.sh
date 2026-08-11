@@ -135,6 +135,14 @@ seed_skill() { # checkout, directory, description
 		"$(basename "$2")" "$3" >"$1/$2/SKILL.md"
 }
 
+# An agent definition is a single Markdown file, not a SKILL.md-marked
+# directory, so it seeds directly at "$1/$2.md".
+seed_agent() { # checkout, path (no extension), description
+	mkdir -p "$(dirname "$1/$2.md")"
+	printf -- '---\nname: %s\ndescription: %s\n---\n' \
+		"$(basename "$2")" "$3" >"$1/$2.md"
+}
+
 for name in alpha beta gamma skills; do
 	git init -q --bare --initial-branch=main "$WORK/origins/$name.git"
 	git init -q --initial-branch=main "$WORK/seed-$name"
@@ -143,8 +151,12 @@ for name in alpha beta gamma skills; do
 	# alpha never opts in, so its skill must stay invisible.
 	alpha) seed_skill "$WORK/seed-$name" .claude/skills/alpha-hidden "Never opted in." ;;
 	# beta and gamma both expose `deploy`; beta comes first in manifest order, so
-	# it wins the name and gamma's copy is shadowed.
-	beta) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Beta deploy skill." ;;
+	# it wins the name and gamma's copy is shadowed. beta also opts into agents,
+	# with a single agent definition to exercise Phase 3b end to end.
+	beta)
+		seed_skill "$WORK/seed-$name" .claude/skills/deploy "Beta deploy skill."
+		seed_agent "$WORK/seed-$name" .claude/agents/reviewer "Beta reviewer agent."
+		;;
 	gamma) seed_skill "$WORK/seed-$name" .claude/skills/deploy "Gamma deploy skill." ;;
 	# A dedicated skills repository keeps its corpus under a single `src` dir.
 	skills)
@@ -197,6 +209,7 @@ branch = "main"
 path = "beta"
 url = "$WORK/origins/beta.git"
 skills = true
+agents = true
 
 [[repo]]
 path = "gamma"
@@ -448,6 +461,13 @@ for dir in .claude/skills .agents/skills; do
 			"$WORK/demo.workspace/$dir/pipeline/SKILL.md")" 1
 done
 
+assert "agent definition links into .claude/agents" \
+	"$(grep -c 'Beta reviewer agent' "$WORK/demo.workspace/.claude/agents/reviewer.md")" 1
+assert "agent link is relative" \
+	"$(readlink "$WORK/demo.workspace/.claude/agents/reviewer.md" | cut -c1-2)" ..
+assert "bootstrap reports the linked agent definition" \
+	"$(grep -Ec '^agent +reviewer +beta$' "$WORK/boot1.log")" 1
+
 # --- the deny-all invariant --------------------------------------------------
 echo 'TOKEN=secret' >"$WORK/demo.workspace/leak.env"
 assert "inner repos and secrets stay invisible" \
@@ -474,7 +494,7 @@ assert "second bootstrap changes nothing on disk" "$(
 assert "second bootstrap regenerates nothing" \
 	"$(grep -c 'trees     unchanged' "$WORK/boot2.log")" 1
 assert "second bootstrap relinks nothing" \
-	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 2
+	"$(grep -c ' 0 link(s) changed' "$WORK/boot2.log")" 3
 assert "second bootstrap moves no HEAD" \
 	"$(git -C "$WORK/demo.workspace/alpha" rev-parse HEAD)" "$HEAD_BEFORE"
 }

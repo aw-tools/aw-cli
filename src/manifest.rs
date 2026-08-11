@@ -63,6 +63,11 @@ pub struct Repo {
     /// from a repository that has not explicitly opted in.
     #[serde(default)]
     pub skills: Option<SkillOptIn>,
+    /// Opt-in to agent-definition propagation. Absent means off: agent
+    /// definitions are never linked from a repository that has not explicitly
+    /// opted in.
+    #[serde(default)]
+    pub agents: Option<AgentOptIn>,
 }
 
 /// A repository's `skills` value: either a boolean toggle or a configuration
@@ -132,6 +137,64 @@ impl SkillConfig<'_> {
     }
 }
 
+/// A repository's `agents` value: either a boolean toggle or a configuration
+/// table, in the same shape as `SkillOptIn`. `true` opts in with the
+/// convention default (`.claude/agents`); the table narrows which source
+/// directories and definition names apply.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum AgentOptIn {
+    Toggle(bool),
+    Table(AgentTable),
+}
+
+/// Unknown keys are rejected for the same reason as `SkillTable`: a typo must
+/// surface rather than silently opt in with the convention defaults.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTable {
+    /// Source directories relative to the checkout. Absent means the
+    /// convention default (`DEFAULT_AGENT_DIRS` in `agents.rs`).
+    pub dirs: Option<Vec<String>>,
+    /// Allowlist of agent-definition names. Absent admits every discovered
+    /// definition.
+    pub only: Option<Vec<String>>,
+}
+
+impl Repo {
+    /// The repository's effective agent-definition configuration, if it opted
+    /// in at all. `None` covers both an absent `agents` key and `agents =
+    /// false`.
+    pub fn agent_config(&self) -> Option<AgentConfig<'_>> {
+        match self.agents.as_ref()? {
+            AgentOptIn::Toggle(false) => None,
+            AgentOptIn::Toggle(true) => Some(AgentConfig {
+                dirs: None,
+                only: None,
+            }),
+            AgentOptIn::Table(table) => Some(AgentConfig {
+                dirs: table.dirs.as_deref(),
+                only: table.only.as_deref(),
+            }),
+        }
+    }
+}
+
+/// Resolved view of an opted-in repository's `agents` table, borrowing the
+/// manifest. `dirs = None` means fall back to the convention default; `only =
+/// None` means admit every discovered definition.
+pub struct AgentConfig<'a> {
+    pub dirs: Option<&'a [String]>,
+    pub only: Option<&'a [String]>,
+}
+
+impl AgentConfig<'_> {
+    pub fn admits(&self, name: &str) -> bool {
+        self.only
+            .is_none_or(|names| names.iter().any(|n| n == name))
+    }
+}
+
 impl Manifest {
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join(FILENAME);
@@ -162,6 +225,7 @@ impl Manifest {
                 repo.path
             );
             validate_skills(repo)?;
+            validate_agents(repo)?;
         }
         Ok(())
     }
@@ -207,6 +271,53 @@ fn validate_skills(repo: &Repo) -> Result<()> {
         anyhow::ensure!(
             !only.is_empty(),
             "repo {} opts into skills with an empty `only`; drop the key to admit every skill or name at least one",
+            repo.path
+        );
+    }
+    Ok(())
+}
+
+/// Validate an opted-in repository's `agents` table. Applies the same
+/// containment rules as `validate_skills` to each source directory and rejects
+/// opt-ins that admit nothing. Errors name the offending repository so a typo
+/// is easy to locate.
+fn validate_agents(repo: &Repo) -> Result<()> {
+    let Some(AgentOptIn::Table(table)) = repo.agents.as_ref() else {
+        return Ok(());
+    };
+    if let Some(dirs) = table.dirs.as_ref() {
+        anyhow::ensure!(
+            !dirs.is_empty(),
+            "repo {} opts into agents with an empty `dirs`; drop the key for the defaults or name at least one directory",
+            repo.path
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for dir in dirs {
+            check_contained(dir)
+                .with_context(|| format!("repo {} agents directory {dir:?}", repo.path))?;
+            // Dedupe on the normalised path so aliased spellings of one
+            // directory ("src", "./src", "src/") cannot scan it twice and
+            // report every definition in it as shadowed by its own copy.
+            let normalised: PathBuf = Path::new(dir)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
+            anyhow::ensure!(
+                !normalised.as_os_str().is_empty(),
+                "repo {} agents directory {dir:?} names the checkout root; agent definitions are never swept from a repository root",
+                repo.path
+            );
+            anyhow::ensure!(
+                seen.insert(normalised),
+                "repo {} lists agents directory {dir:?} more than once",
+                repo.path
+            );
+        }
+    }
+    if let Some(only) = table.only.as_ref() {
+        anyhow::ensure!(
+            !only.is_empty(),
+            "repo {} opts into agents with an empty `only`; drop the key to admit every definition or name at least one",
             repo.path
         );
     }
@@ -718,6 +829,90 @@ mod tests {
                 .expect("fixture parses");
         let err = manifest.validate().expect_err("empty tree name");
         assert!(err.to_string().contains("no usable tree name"), "{err}");
+    }
+
+    /// Parse a one-repo manifest whose repo carries `agents_fragment` verbatim,
+    /// returning the manifest without validating it.
+    fn manifest_with_agents(agents_fragment: &str) -> Manifest {
+        toml::from_str(&format!(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\n{agents_fragment}"
+        ))
+        .expect("fixture parses")
+    }
+
+    #[test]
+    fn absent_agents_key_is_off() {
+        let manifest = manifest_with_agents("");
+        assert!(manifest.repos[0].agent_config().is_none());
+    }
+
+    #[test]
+    fn agents_false_is_off() {
+        let manifest = manifest_with_agents("agents = false\n");
+        assert!(manifest.repos[0].agent_config().is_none());
+    }
+
+    #[test]
+    fn agents_true_opts_in_with_defaults() {
+        let manifest = manifest_with_agents("agents = true\n");
+        let config = manifest.repos[0].agent_config().expect("true opts in");
+        assert!(config.dirs.is_none(), "defaults to the convention dirs");
+        assert!(config.only.is_none(), "admits every definition");
+        assert!(config.admits("anything"));
+    }
+
+    #[test]
+    fn agents_table_carries_dirs_and_only() {
+        let manifest = manifest_with_agents("agents = { dirs = [\"src\"], only = [\"worker\"] }\n");
+        let config = manifest.repos[0].agent_config().expect("a table opts in");
+        assert_eq!(config.dirs, Some(["src".to_owned()].as_slice()));
+        assert!(config.admits("worker"));
+        assert!(!config.admits("other"), "only narrows to the allowlist");
+    }
+
+    #[test]
+    fn rejects_empty_agent_dirs() {
+        let err = manifest_with_agents("agents = { dirs = [] }\n")
+            .validate()
+            .expect_err("an empty dirs list is a mistake");
+        assert!(err.to_string().contains("empty `dirs`"), "{err}");
+    }
+
+    #[test]
+    fn rejects_an_absolute_agents_dir() {
+        let err = manifest_with_agents("agents = { dirs = [\"/etc\"] }\n")
+            .validate()
+            .expect_err("an absolute dir escapes the checkout");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("absolute"), "{chain}");
+        assert!(chain.contains("member"), "names the repo: {chain}");
+    }
+
+    #[test]
+    fn rejects_an_agents_dir_escaping_the_checkout() {
+        let err = manifest_with_agents("agents = { dirs = [\"../elsewhere\"] }\n")
+            .validate()
+            .expect_err("`..` escapes the checkout");
+        assert!(format!("{err:#}").contains("escapes"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_an_agents_dir_naming_the_checkout_root() {
+        let err = manifest_with_agents("agents = { dirs = [\".\"] }\n")
+            .validate()
+            .expect_err("the checkout root is never swept for agent definitions");
+        assert!(err.to_string().contains("checkout root"), "{err}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_key_in_the_agents_table() {
+        let err = toml::from_str::<Manifest>(
+            "[workspace]\nname = \"w\"\n\
+             [[repo]]\npath = \"member\"\nurl = \"u\"\nagents = { dir = [\"src\"] }\n",
+        )
+        .expect_err("a typo'd key must not silently opt in with defaults");
+        assert!(err.to_string().contains("agents"), "{err}");
     }
 
     #[test]

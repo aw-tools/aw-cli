@@ -85,6 +85,35 @@ pub fn bootstrap_unmatched_only(repo: &str, entry: &str) -> String {
     skill_unmatched_only(repo, entry)
 }
 
+pub fn bootstrap_agents(changed: usize) -> String {
+    format!("agents    {changed} link(s) changed")
+}
+
+pub fn bootstrap_agent(name: &str, repo: &str) -> String {
+    format!("agent     {name:<24} {repo}")
+}
+
+/// Report an agent definition that lost a first-appearance collision. The
+/// winning name was already sourced from `winner_repo`; this one at `path` is
+/// ignored.
+pub fn bootstrap_agent_shadowed(name: &str, path: &str, winner_repo: &str) -> String {
+    format!("shadowed  {name} at {path} is ignored because {winner_repo} is already sourced")
+}
+
+/// Report an explicitly configured agents source directory that does not
+/// exist. A typo in the manifest surfaces here rather than silently
+/// discovering nothing.
+pub fn bootstrap_missing_agent_dir(repo: &str, dir: &str) -> String {
+    format!("agents    {repo} configured agents directory {dir} does not exist")
+}
+
+/// Report an `only` allowlist entry that matched no discovered agent
+/// definition. A typo in the manifest surfaces here rather than silently
+/// narrowing to nothing.
+pub fn bootstrap_unmatched_agent_only(repo: &str, entry: &str) -> String {
+    format!("agents    {repo} `only` entry {entry} matched no agent definition")
+}
+
 pub fn bootstrap_verify(repos: usize, missing: usize, linked: usize, shadowed: usize) -> String {
     format!(
         "verify    {repos} repo(s), {missing} missing, {linked} skill(s) linked, {shadowed} shadowed"
