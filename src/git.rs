@@ -942,24 +942,31 @@ mod tests {
     /// dropped mid-run must retire only its own entry — under the previous
     /// single-slot design the survivors became unreachable to an interrupt.
     ///
-    /// One test rather than several: the registry is process-global, so
-    /// separate cases would race each other under the parallel test runner.
+    /// One test rather than several, and phrased as containment rather than
+    /// exact contents: the registry is process-global, so sibling tests that
+    /// run real bounded git children register their own pgids alongside these.
+    /// Values above the maximum pid keep those siblings from colliding with
+    /// the two entries under test.
     #[test]
     fn concurrent_groups_register_and_retire_independently() {
-        let outer = ActiveGroup::set(4321);
-        let inner = ActiveGroup::set(8765);
-        assert_eq!(active_groups().as_slice(), [4321, 8765]);
+        const OUTER: i32 = i32::MAX - 1;
+        const INNER: i32 = i32::MAX - 2;
+        let holds = |pgid: i32| active_groups().contains(&pgid);
+
+        let outer = ActiveGroup::set(OUTER.try_into().unwrap());
+        let inner = ActiveGroup::set(INNER.try_into().unwrap());
+        assert!(holds(OUTER) && holds(INNER));
 
         // A pgid that does not survive the conversion is never registered, so
         // its guard has nothing to retire and evicts no live sibling.
         drop(ActiveGroup::set(0));
-        assert_eq!(active_groups().as_slice(), [4321, 8765]);
+        assert!(holds(OUTER) && holds(INNER));
 
         drop(outer);
-        assert_eq!(active_groups().as_slice(), [8765]);
+        assert!(!holds(OUTER) && holds(INNER));
 
         drop(inner);
-        assert!(active_groups().is_empty());
+        assert!(!holds(OUTER) && !holds(INNER));
     }
 
     #[test]
