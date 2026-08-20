@@ -23,6 +23,8 @@ pub struct Manifest {
     pub workspace: Workspace,
     #[serde(default)]
     pub identity: Option<Identity>,
+    #[serde(default)]
+    pub sync: Option<Sync>,
     #[serde(default, rename = "repo")]
     pub repos: Vec<Repo>,
 }
@@ -38,6 +40,20 @@ pub struct Template {
     #[serde(rename = "ref")]
     pub reference: String,
     pub sha: String,
+}
+
+/// Workspace-wide defaults for `aw sync`.
+///
+/// A workspace whose remotes are slow, rate-limited, or reached over a single
+/// shared tunnel wants its own fetch concurrency rather than the built-in
+/// default, and wants it to travel with the manifest instead of living in every
+/// operator's shell history.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sync {
+    /// How many repositories to fetch at once. `0` and `1` both mean
+    /// sequential. Overridden by `--concurrency` on the command line.
+    pub concurrency: Option<usize>,
 }
 
 /// Repository-local git identity, applied to every managed repository.

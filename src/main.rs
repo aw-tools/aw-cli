@@ -71,6 +71,10 @@ enum Verb {
     /// Fetch the workspace layer and managed repositories, and report changes.
     /// Exits non-zero when any fetch fails, the layer's included.
     Sync {
+        /// Repositories to fetch at once. 0 or 1 fetches sequentially.
+        /// Overrides `sync.concurrency` in the manifest.
+        #[arg(long)]
+        concurrency: Option<usize>,
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
@@ -112,7 +116,7 @@ fn run() -> Result<bool> {
             json,
             exit_code,
         } => status(&manifest::resolve_root(dir)?, json, exit_code),
-        Verb::Sync { dir } => sync::run(&manifest::resolve_root(dir)?),
+        Verb::Sync { concurrency, dir } => sync::run(&manifest::resolve_root(dir)?, concurrency),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
     }
 }

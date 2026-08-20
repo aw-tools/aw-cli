@@ -17,8 +17,9 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 # Group-wide signalling: std's Child::kill reaches only the leader PID, so
 # terminating the child's whole process group on a timeout needs a negative-PID
-# kill, which rustix wraps without reintroducing unsafe.
-rustix = { version = "1", features = ["process"] }
+# kill, which rustix wraps without reintroducing unsafe. `termios` supplies the
+# window size the sync progress indicator clips itself to.
+rustix = { version = "1", features = ["process", "termios"] }
 # Manifest is the single source of truth; parsed once into typed structs.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
