@@ -1418,6 +1418,87 @@ assert "sync reports a non-repository workspace root as skipped" \
 	"$(grep -c '^layer[[:space:]]*workspace[[:space:]]*not a repository, skipped' \
 		"$WORK/sync-workspace-absent.log")" 1
 mv "$WORK/workspace-dotgit" "$WORK/demo.workspace/.git"
+
+# --- concurrency ---
+# `--concurrency 1` is the documented way back to the sequential behaviour, so
+# its stdout must stay in manifest order: the layer first, then every member in
+# the order workspace.toml lists them.
+if "$AW" sync --concurrency 1 "$WORK/demo.workspace" \
+	>"$WORK/sync-serial.log" 2>"$WORK/sync-serial.err"; then
+	pass "sync exits zero with --concurrency 1"
+else
+	fail "sync exits zero with --concurrency 1"
+fi
+assert "sync --concurrency 1 reports in manifest order" \
+	"$(grep -E '^(layer|repo) ' "$WORK/sync-serial.log" | awk '{print $2}' |
+		tr '\n' ' ')" \
+	"workspace alpha beta gamma skills missing workspace-alias "
+
+# Redirected output carries no progress indicator in either stream: the
+# indicator is drawn only when stderr is a terminal.
+assert "sync --concurrency 1 writes nothing to stderr" \
+	"$(wc -c <"$WORK/sync-serial.err" | tr -d ' ')" 0
+assert "sync --concurrency 1 leaves no escape sequences on stdout" \
+	"$(grep -c $'\033' "$WORK/sync-serial.log" || true)" 0
+
+# A concurrent run reports the same rows, in some order, and writes no progress
+# artefacts when redirected.
+if "$AW" sync --concurrency 8 "$WORK/demo.workspace" \
+	>"$WORK/sync-parallel.log" 2>"$WORK/sync-parallel.err"; then
+	pass "sync exits zero with --concurrency 8"
+else
+	fail "sync exits zero with --concurrency 8"
+fi
+assert "sync --concurrency 8 reports every repository exactly once" \
+	"$(grep -E '^(layer|repo) ' "$WORK/sync-parallel.log" | awk '{print $2}' |
+		sort | tr '\n' ' ')" \
+	"alpha beta gamma missing skills workspace workspace-alias "
+assert "sync --concurrency 8 writes nothing to stderr" \
+	"$(wc -c <"$WORK/sync-parallel.err" | tr -d ' ')" 0
+assert "sync --concurrency 8 leaves no escape sequences on stdout" \
+	"$(grep -c $'\033' "$WORK/sync-parallel.log" || true)" 0
+assert "sync --concurrency 8 keeps the verify tally" \
+	"$(grep -c '^verify    5 repo(s), 1 skipped, 0 failed,' \
+		"$WORK/sync-parallel.log")" 1
+
+# Zero is a plausible thing to type and must fetch sequentially rather than
+# leaving the pool with no workers and silently fetching nothing.
+if "$AW" sync --concurrency 0 "$WORK/demo.workspace" \
+	>"$WORK/sync-zero.log" 2>&1; then
+	pass "sync exits zero with --concurrency 0"
+else
+	fail "sync exits zero with --concurrency 0"
+fi
+assert "sync --concurrency 0 still fetches every present member" \
+	"$(grep -c '^repo[[:space:]].*fetched$' "$WORK/sync-zero.log")" 5
+
+# The manifest carries the workspace-wide default.
+cat >>"$WORK/demo.workspace/workspace.toml" <<EOF
+
+[sync]
+concurrency = 2
+EOF
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-configured.log" 2>&1; then
+	pass "sync accepts sync.concurrency from the manifest"
+else
+	fail "sync accepts sync.concurrency from the manifest"
+fi
+assert "sync with a configured concurrency fetches every present member" \
+	"$(grep -c '^repo[[:space:]].*fetched$' "$WORK/sync-configured.log")" 5
+
+# A typo in the table is rejected outright rather than silently ignored.
+sed -i.bak 's/^concurrency = 2$/concurrancy = 2/' \
+	"$WORK/demo.workspace/workspace.toml"
+if "$AW" sync "$WORK/demo.workspace" >"$WORK/sync-typo.log" 2>&1; then
+	fail "sync rejects an unknown key in the sync table"
+else
+	pass "sync rejects an unknown key in the sync table"
+fi
+assert "sync names the unknown sync key and the one it meant" \
+	"$(grep -c 'unknown field `concurrancy`, expected `concurrency`' \
+		"$WORK/sync-typo.log")" 1
+mv "$WORK/demo.workspace/workspace.toml.bak" \
+	"$WORK/demo.workspace/workspace.toml"
 }
 
 # --- read-only invariant ------------------------------------------------------

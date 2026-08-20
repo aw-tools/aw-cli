@@ -156,6 +156,33 @@ pub fn sync_layer_no_origin(label: &str) -> String {
     format!("layer     {label:<24} no origin, skipped")
 }
 
+/// Render the live fetch indicator, naming the repositories still in flight so
+/// a stalled run says which remote is holding it up rather than only how many
+/// are left. Clipped to `width`, since a wrapped indicator would leave its tail
+/// on screen when the next redraw rewrites a single row.
+pub fn sync_progress(done: usize, total: usize, in_flight: &[&str], width: usize) -> String {
+    let mut line = format!("fetching  {done} of {total}");
+    if !in_flight.is_empty() {
+        line.push_str(" — ");
+        line.push_str(&in_flight.join(", "));
+    }
+    clip(&line, width)
+}
+
+/// Clip to a column count, marking the cut with an ellipsis. Counts characters
+/// rather than display cells: repository paths are the only variable part and
+/// a double-width glyph there would merely clip a column early.
+fn clip(line: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if line.chars().count() <= width {
+        return line.to_owned();
+    }
+    let kept: String = line.chars().take(width - 1).collect();
+    format!("{kept}…")
+}
+
 pub fn sync_skills(harness: &str, changed: usize) -> String {
     format!("skills    {harness:<12} {changed} link(s) changed")
 }
@@ -442,5 +469,32 @@ mod tests {
         let line = adopt_delivery_model(None);
         assert!(line.contains("No delivery model declared"));
         assert!(line.contains("conservative default"));
+    }
+
+    #[test]
+    fn sync_progress_names_the_repositories_in_flight() {
+        let line = sync_progress(2, 7, &["skills", "lore-bench"], 80);
+        assert_eq!(line, "fetching  2 of 7 — skills, lore-bench");
+    }
+
+    #[test]
+    fn sync_progress_without_anything_in_flight_is_the_count_alone() {
+        assert_eq!(sync_progress(7, 7, &[], 80), "fetching  7 of 7");
+    }
+
+    #[test]
+    fn sync_progress_clips_to_the_terminal_width() {
+        let line = sync_progress(2, 7, &["a-very-long-repository-name"], 24);
+        assert_eq!(line.chars().count(), 24);
+        assert!(line.ends_with('…'));
+        assert!(line.starts_with("fetching  2 of 7"));
+    }
+
+    /// A one-column terminal still gets a well-formed line rather than a panic
+    /// on a `width - 1` underflow.
+    #[test]
+    fn sync_progress_survives_a_degenerate_width() {
+        assert_eq!(sync_progress(2, 7, &[], 0), "");
+        assert_eq!(sync_progress(2, 7, &[], 1), "…");
     }
 }

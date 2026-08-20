@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// How long `aw init` waits for each template Git operation to complete.
@@ -276,32 +276,51 @@ fn kill_process_group(leader_pid: u32) {
     let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
 }
 
-/// PID (== process-group id) of the bounded git child currently running, or 0
-/// when none. Read by the interrupt forwarder so a Ctrl-C tears the child group
-/// down instead of orphaning it — the same teardown a timeout performs.
-static ACTIVE_GROUP: AtomicI32 = AtomicI32::new(0);
+/// PIDs (== process-group ids) of the bounded git children currently running.
+/// Read by the interrupt forwarder so a Ctrl-C tears every child group down
+/// instead of orphaning it — the same teardown a timeout performs.
+///
+/// A set rather than a single slot because `aw sync` fetches concurrently: with
+/// one slot the child that started last would be the only one an interrupt
+/// could reach, and every fetch still in flight beside it would orphan.
+static ACTIVE_GROUPS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
-/// Record the active bounded child group for the interrupt forwarder, clearing
-/// it on drop so an interrupt after the child is reaped kills nothing. Only one
-/// bounded child runs at a time, so a single slot suffices.
-struct ActiveGroup;
+/// Lock the registry, taking a poisoned mutex's contents rather than panicking:
+/// a panic on one fetch thread must not cost the interrupt forwarder its reach
+/// over the children the other threads are still running.
+fn active_groups() -> MutexGuard<'static, Vec<i32>> {
+    ACTIVE_GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Record an active bounded child group for the interrupt forwarder, removing
+/// it on drop so an interrupt after the child is reaped kills nothing.
+struct ActiveGroup(i32);
 
 impl ActiveGroup {
     fn set(leader_pid: u32) -> Self {
-        ACTIVE_GROUP.store(i32::try_from(leader_pid).unwrap_or(0), Ordering::SeqCst);
-        Self
+        let pgid = i32::try_from(leader_pid).unwrap_or(0);
+        if pgid > 0 {
+            active_groups().push(pgid);
+        }
+        Self(pgid)
     }
 }
 
 impl Drop for ActiveGroup {
     fn drop(&mut self) {
-        ACTIVE_GROUP.store(0, Ordering::SeqCst);
+        // Remove this child's own entry only. `swap_remove` is safe here
+        // because the registry is a set of live groups with no meaningful
+        // order — the forwarder kills all of them.
+        let mut groups = active_groups();
+        if let Some(index) = groups.iter().position(|&pgid| pgid == self.0) {
+            groups.swap_remove(index);
+        }
     }
 }
 
 /// The child group an interrupt should forward to given a recorded pgid, or
-/// `None` for the unset (0) or invalid sentinel. Split from the load so the
-/// guard is unit-testable without touching the shared slot.
+/// `None` for the unset (0) or invalid sentinel. Split from the registry so the
+/// guard is unit-testable without touching shared state.
 fn interrupt_target_from(pgid: i32) -> Option<u32> {
     if pgid > 0 {
         u32::try_from(pgid).ok()
@@ -310,14 +329,14 @@ fn interrupt_target_from(pgid: i32) -> Option<u32> {
     }
 }
 
-/// Forward an interactive interrupt to the active bounded child group.
+/// Forward an interactive interrupt to every active bounded child group.
 ///
 /// `process_group(0)` moves each bounded git child into its own group, out of
 /// the terminal's foreground group, so a Ctrl-C would otherwise reach only `aw`
-/// and orphan the child and its helpers. This installs a listener thread that,
-/// on SIGINT or SIGTERM, kills the recorded child group the same way a timeout
-/// does, then exits with the conventional signal status. The reaction runs off
-/// the handler, so the group kill needs no async-signal-safety dance.
+/// and orphan the children and their helpers. This installs a listener thread
+/// that, on SIGINT or SIGTERM, kills every recorded child group the same way a
+/// timeout does, then exits with the conventional signal status. The reaction
+/// runs off the handler, so the group kills need no async-signal-safety dance.
 pub fn install_interrupt_forwarder() {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
@@ -326,12 +345,15 @@ pub fn install_interrupt_forwarder() {
         return;
     };
     std::thread::spawn(move || {
-        // The first interrupt is terminal: forward it to the child group, then
+        // The first interrupt is terminal: forward it to the child groups, then
         // exit with the conventional status. `aw` does no interruptible work
         // that should survive a second Ctrl-C.
         if let Some(signal) = signals.forever().next() {
-            let recorded = ACTIVE_GROUP.load(Ordering::SeqCst);
-            if let Some(leader) = interrupt_target_from(recorded) {
+            // Copy out and release the lock before killing: a fetch thread
+            // reaping its child takes the same lock in `Drop`, and holding it
+            // across the kills would stall that for no gain.
+            let recorded = active_groups().clone();
+            for leader in recorded.into_iter().filter_map(interrupt_target_from) {
                 kill_process_group(leader);
             }
             std::process::exit(128 + signal);
@@ -914,6 +936,30 @@ mod tests {
         assert_eq!(interrupt_target_from(0), None);
         assert_eq!(interrupt_target_from(-1), None);
         assert_eq!(interrupt_target_from(4321), Some(4321));
+    }
+
+    /// Concurrent fetches each register their own child group, and a guard
+    /// dropped mid-run must retire only its own entry — under the previous
+    /// single-slot design the survivors became unreachable to an interrupt.
+    ///
+    /// One test rather than several: the registry is process-global, so
+    /// separate cases would race each other under the parallel test runner.
+    #[test]
+    fn concurrent_groups_register_and_retire_independently() {
+        let outer = ActiveGroup::set(4321);
+        let inner = ActiveGroup::set(8765);
+        assert_eq!(active_groups().as_slice(), [4321, 8765]);
+
+        // A pgid that does not survive the conversion is never registered, so
+        // its guard has nothing to retire and evicts no live sibling.
+        drop(ActiveGroup::set(0));
+        assert_eq!(active_groups().as_slice(), [4321, 8765]);
+
+        drop(outer);
+        assert_eq!(active_groups().as_slice(), [8765]);
+
+        drop(inner);
+        assert!(active_groups().is_empty());
     }
 
     #[test]
