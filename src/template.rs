@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::git;
 
-pub const DEFAULT_URL: &str = "git@github.com:attila/workspace.template.git";
+pub const DEFAULT_URL: &str = "git@github.com:aw-tools/workspace.template.git";
 pub const DEFAULT_REF: &str = "v0.1.0";
 
 #[derive(Debug, Eq, PartialEq)]
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(
             Source::parse(None).expect("default parses"),
             Source {
-                url: "git@github.com:attila/workspace.template.git".to_owned(),
+                url: "git@github.com:aw-tools/workspace.template.git".to_owned(),
                 reference: Some("v0.1.0".to_owned()),
             }
         );
@@ -302,17 +302,17 @@ mod tests {
     #[test]
     fn separates_refs_without_splitting_ssh_usernames() {
         assert_eq!(
-            Source::parse(Some("git@github.com:attila/template.git")).expect("SSH URL parses"),
+            Source::parse(Some("git@github.com:aw-tools/template.git")).expect("SSH URL parses"),
             Source {
-                url: "git@github.com:attila/template.git".to_owned(),
+                url: "git@github.com:aw-tools/template.git".to_owned(),
                 reference: None,
             }
         );
         assert_eq!(
-            Source::parse(Some("git@github.com:attila/template.git@release/v1"))
+            Source::parse(Some("git@github.com:aw-tools/template.git@release/v1"))
                 .expect("SSH URL and ref parse"),
             Source {
-                url: "git@github.com:attila/template.git".to_owned(),
+                url: "git@github.com:aw-tools/template.git".to_owned(),
                 reference: Some("release/v1".to_owned()),
             }
         );
