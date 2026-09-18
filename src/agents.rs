@@ -335,7 +335,9 @@ mod tests {
     #[test]
     fn scans_configured_dirs_in_listed_order_and_dedupes_across_them() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path();
+        // Canonicalised: resolution returns real paths, and on macOS the temp
+        // dir is reached through a symlink.
+        let root = &std::fs::canonicalize(temp.path()).expect("canonical temp dir");
         seed_agent(root, "member/first/worker");
         seed_agent(root, "member/first/only-first");
         seed_agent(root, "member/second/worker");
@@ -500,7 +502,9 @@ mod tests {
     #[test]
     fn links_resolved_definitions_and_prunes_stale_ones() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path();
+        // Canonicalised: link targets are computed from real paths, and on
+        // macOS the temp dir is reached through a symlink.
+        let root = &std::fs::canonicalize(temp.path()).expect("canonical temp dir");
         seed_agent(root, "member/.claude/agents/worker");
 
         let resolution = resolve(root, &manifest("agents = true\n")).expect("resolve");

@@ -448,7 +448,9 @@ mod tests {
     #[test]
     fn scans_configured_dirs_in_listed_order_and_dedupes_across_them() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path();
+        // Canonicalised: resolution returns real paths, and on macOS the temp
+        // dir is reached through a symlink.
+        let root = &std::fs::canonicalize(temp.path()).expect("canonical temp dir");
         seed_skill(root, "member/first/deploy");
         seed_skill(root, "member/first/only-first");
         seed_skill(root, "member/second/deploy");
@@ -504,7 +506,9 @@ mod tests {
     #[test]
     fn default_dirs_scan_agents_before_claude() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path();
+        // Canonicalised: resolution returns real paths, and on macOS the temp
+        // dir is reached through a symlink.
+        let root = &std::fs::canonicalize(temp.path()).expect("canonical temp dir");
         seed_skill(root, "member/.agents/skills/deploy");
         seed_skill(root, "member/.claude/skills/deploy");
 
