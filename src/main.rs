@@ -146,12 +146,7 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
 
     let source = template::Source::parse(template)?;
     let prepared = template::prepare(&source)?;
-    manifest::validate_template(
-        &root,
-        &source.url,
-        source.reference.as_deref().unwrap_or(""),
-        &prepared.sha,
-    )?;
+    manifest::validate_template(&root, &source.url, &prepared.reference, &prepared.sha)?;
     let name = if let Some(name) = name {
         name
     } else {
@@ -163,12 +158,8 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     if created.iter().any(|path| path == manifest::FILENAME) {
         set_workspace_name(&root, &name)?;
     }
-    let manifest = manifest::record_template(
-        &root,
-        &source.url,
-        source.reference.as_deref().unwrap_or(""),
-        &prepared.sha,
-    )?;
+    let manifest =
+        manifest::record_template(&root, &source.url, &prepared.reference, &prepared.sha)?;
 
     if git::is_repo(&root) {
         println!("{}", reporting::init_existing_repo());
@@ -183,11 +174,7 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
 
     println!(
         "{}",
-        reporting::init_source(
-            &source.url,
-            source.reference.as_deref().unwrap_or(""),
-            &prepared.sha
-        )
+        reporting::init_source(&source.url, &prepared.reference, &prepared.sha)
     );
     if created.is_empty() {
         println!("{}", reporting::init_unchanged_template());

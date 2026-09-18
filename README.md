@@ -47,10 +47,11 @@ aw bootstrap
 ```
 
 `aw init` clones the
-[workspace template](https://github.com/aw-tools/workspace.template) and lays it
-out under the directory you name. Then `aw bootstrap` clones every repository
-the manifest lists and links the agent skills. The guide's third chapter walks
-through the first session.
+[workspace template](https://github.com/aw-tools/workspace.template) at its
+latest stable release and lays it out under the directory you name. Pass
+`--template <url>@<ref>` to seed from another template or another ref. Then
+`aw bootstrap` clones every repository the manifest lists and links the agent
+skills. The guide's third chapter walks through the first session.
 
 ## Contributing
 

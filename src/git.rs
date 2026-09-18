@@ -514,6 +514,12 @@ fn fetch_ref(dir: &Path, reference: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every tag name in the repository, one per line from `git tag --list`.
+pub fn tags(dir: &Path) -> Result<Vec<String>> {
+    let out = run(dir, &["tag", "--list"])?;
+    Ok(out.lines().map(str::to_owned).collect())
+}
+
 pub fn checkout_detached(dir: &Path, sha: &str) -> Result<()> {
     run(dir, &["checkout", "--quiet", "--detach", sha]).map(|_| ())
 }
