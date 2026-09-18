@@ -380,6 +380,19 @@ pub fn replace_workspace_name(text: &str, name: &str) -> Result<String> {
     )
 }
 
+/// The template block an existing manifest records, if the manifest exists.
+pub fn recorded_template(root: &Path) -> Result<Option<Template>> {
+    let path = root.join(FILENAME);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let parsed: Manifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
+    Ok(parsed.template)
+}
+
 /// Reject a re-init whose resolved source conflicts with recorded provenance.
 /// A target without a manifest or provenance is still eligible for its first
 /// template overlay.

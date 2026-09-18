@@ -514,6 +514,12 @@ fn fetch_ref(dir: &Path, reference: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every tag name in the repository, one per line from `git tag --list`.
+pub fn tags(dir: &Path) -> Result<Vec<String>> {
+    let out = run(dir, &["tag", "--list"])?;
+    Ok(out.lines().map(str::to_owned).collect())
+}
+
 pub fn checkout_detached(dir: &Path, sha: &str) -> Result<()> {
     run(dir, &["checkout", "--quiet", "--detach", sha]).map(|_| ())
 }
@@ -766,7 +772,7 @@ fn resolved_git_path(dir: &Path, option: &str, description: &str) -> Result<Path
         .with_context(|| format!("resolving {description} {}", path.display()))
 }
 
-fn run(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)

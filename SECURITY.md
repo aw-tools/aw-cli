@@ -11,9 +11,11 @@ probing remotes on `aw doctor`.
 The primary threats are:
 
 - **A malicious template.** `aw init` clones a template from a URL the user
-  gives, or the built-in default. The template's contents become the workspace,
-  and `aw bootstrap` sets `core.hooksPath` to the template's hook directory when
-  one exists, so a hostile template can run code on the user's next commit.
+  gives, or the built-in default, and without an explicit ref seeds from the
+  highest stable tag found in that clone, never from anything the remote
+  advertises separately. The template's contents become the workspace, and
+  `aw bootstrap` sets `core.hooksPath` to the template's hook directory when one
+  exists, so a hostile template can run code on the user's next commit.
 - **Credential leakage** through a template or manifest URL.
 - **A hung or runaway subprocess** from an unreachable remote.
 

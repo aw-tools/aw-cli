@@ -43,7 +43,8 @@ enum Verb {
         /// name with any `.workspace` suffix removed.
         #[arg(long)]
         name: Option<String>,
-        /// Template URL or local path, optionally followed by `@ref`.
+        /// Template URL or local path, optionally followed by `@ref`. A remote
+        /// URL without a ref seeds from its latest stable vX.Y.Z tag.
         #[arg(long)]
         template: Option<String>,
     },
@@ -144,14 +145,10 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     let root =
         std::fs::canonicalize(&dir).with_context(|| format!("resolving {}", dir.display()))?;
 
-    let source = template::Source::parse(template)?;
+    let mut source = template::Source::parse(template)?;
+    source.pinned_by(manifest::recorded_template(&root)?.as_ref());
     let prepared = template::prepare(&source)?;
-    manifest::validate_template(
-        &root,
-        &source.url,
-        source.reference.as_deref().unwrap_or(""),
-        &prepared.sha,
-    )?;
+    manifest::validate_template(&root, &source.url, &prepared.reference, &prepared.sha)?;
     let name = if let Some(name) = name {
         name
     } else {
@@ -163,12 +160,8 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     if created.iter().any(|path| path == manifest::FILENAME) {
         set_workspace_name(&root, &name)?;
     }
-    let manifest = manifest::record_template(
-        &root,
-        &source.url,
-        source.reference.as_deref().unwrap_or(""),
-        &prepared.sha,
-    )?;
+    let manifest =
+        manifest::record_template(&root, &source.url, &prepared.reference, &prepared.sha)?;
 
     if git::is_repo(&root) {
         println!("{}", reporting::init_existing_repo());
@@ -183,11 +176,7 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
 
     println!(
         "{}",
-        reporting::init_source(
-            &source.url,
-            source.reference.as_deref().unwrap_or(""),
-            &prepared.sha
-        )
+        reporting::init_source(&source.url, &prepared.reference, &prepared.sha)
     );
     if created.is_empty() {
         println!("{}", reporting::init_unchanged_template());
