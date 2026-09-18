@@ -1,8 +1,10 @@
 //! Workspace template materialisation.
 //!
-//! `aw init` clones the selected template at runtime. With no explicit ref the
-//! default template is seeded from its highest stable release tag, so a release
-//! never needs a constant bumped here.
+//! `aw init` clones the selected template at runtime. A remote template with no
+//! explicit ref is seeded from its highest stable release tag, so a release
+//! never needs a constant bumped here. Compatibility has no ceiling on purpose:
+//! a template whose layout an older binary cannot use fails its contract check
+//! loudly rather than being skipped.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -20,7 +22,7 @@ pub enum Reference {
     LatestStable,
     /// A ref the user named with `@`.
     Named(String),
-    /// Whatever the clone checks out by default.
+    /// Whatever the checkout holds; local paths only.
     Head,
 }
 
@@ -35,13 +37,6 @@ impl Source {
         let spec = spec.unwrap_or(DEFAULT_URL);
         anyhow::ensure!(!spec.trim().is_empty(), "template source is empty");
         reject_http_credentials(spec)?;
-
-        if spec == DEFAULT_URL {
-            return Ok(Self {
-                url: DEFAULT_URL.to_owned(),
-                reference: Reference::LatestStable,
-            });
-        }
 
         if Path::new(spec).exists() {
             return Ok(Self {
@@ -60,8 +55,18 @@ impl Source {
 
         Ok(Self {
             url: spec.to_owned(),
-            reference: Reference::Head,
+            reference: Reference::LatestStable,
         })
+    }
+
+    /// A workspace that already records this template seeds from the ref it
+    /// recorded, so a repeat `aw init` stays a no-op after a newer release.
+    pub fn pinned_by(&mut self, recorded: Option<&crate::manifest::Template>) {
+        if let Some(recorded) = recorded {
+            if self.reference == Reference::LatestStable && recorded.url == self.url {
+                self.reference = Reference::Named(recorded.reference.clone());
+            }
+        }
     }
 }
 
@@ -103,12 +108,18 @@ pub struct Prepared {
 pub fn prepare(source: &Source) -> Result<Prepared> {
     let temporary = TemporaryDirectory::new()?;
     git::clone_template(&source.url, temporary.path())?;
-    let reference = match &source.reference {
-        Reference::LatestStable => Some(latest_stable_tag(temporary.path())?),
-        Reference::Named(reference) => Some(reference.clone()),
-        Reference::Head => None,
+    // The discovered tag resolves as `refs/tags/<tag>` so a branch sharing its
+    // name can never make it ambiguous; the manifest records the bare tag.
+    let (reference, resolve_as) = match &source.reference {
+        Reference::LatestStable => {
+            let tag = latest_stable_tag(&source.url, temporary.path())?;
+            let full = format!("refs/tags/{tag}");
+            (Some(tag), Some(full))
+        }
+        Reference::Named(reference) => (Some(reference.clone()), Some(reference.clone())),
+        Reference::Head => (None, None),
     };
-    let sha = git::resolve_commit(temporary.path(), reference.as_deref())?;
+    let sha = git::resolve_commit(temporary.path(), resolve_as.as_deref())?;
     git::checkout_detached(temporary.path(), &sha)?;
     scrub_seedignored(temporary.path())?;
     validate_contract(temporary.path())?;
@@ -121,13 +132,16 @@ pub fn prepare(source: &Source) -> Result<Prepared> {
 
 /// The highest stable release tag in a clone. The clone carries every tag, so
 /// this needs no second round trip to the remote.
-fn latest_stable_tag(dir: &Path) -> Result<String> {
+fn latest_stable_tag(url: &str, dir: &Path) -> Result<String> {
     let tags = git::tags(dir)?;
     pick_latest_stable(tags.iter().map(String::as_str))
         .map(str::to_owned)
-        .context(
-            "the template has no stable release tag (vMAJOR.MINOR.PATCH); pass one with @<ref>",
-        )
+        .with_context(|| {
+            format!(
+                "the template has no stable release tag (vMAJOR.MINOR.PATCH); \
+                 pin a ref with --template {url}@<ref>"
+            )
+        })
 }
 
 /// Pick the highest `vMAJOR.MINOR.PATCH` tag. Anything else — a pre-release
@@ -147,11 +161,16 @@ fn stable_version(tag: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some((major, minor, patch))
 }
 
+/// A decimal number with no sign, no leading zero and nothing else; too large
+/// for `u64` is not a version either.
 fn plain_number(part: &str) -> Option<u64> {
-    let canonical = part.len() == 1 || !part.starts_with('0');
-    (canonical && !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| part.parse().ok())
-        .flatten()
+    if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if part.len() > 1 && part.starts_with('0') {
+        return None;
+    }
+    part.parse().ok()
 }
 
 /// Merge a prepared template into `root` without replacing anything already
@@ -361,6 +380,58 @@ mod tests {
     }
 
     #[test]
+    fn any_remote_url_without_a_ref_seeds_from_the_latest_stable_release() {
+        for url in [
+            "https://github.com/aw-tools/workspace.template",
+            "https://github.com/aw-tools/workspace.template.git",
+            "git@github.com:someone/else.git",
+        ] {
+            assert_eq!(
+                Source::parse(Some(url))
+                    .expect("remote URL parses")
+                    .reference,
+                Reference::LatestStable,
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_path_keeps_its_checkout() {
+        let local = TemporaryDirectory::new().expect("temporary directory");
+        let spec = local.path().display().to_string();
+        assert_eq!(
+            Source::parse(Some(&spec))
+                .expect("local path parses")
+                .reference,
+            Reference::Head
+        );
+    }
+
+    #[test]
+    fn a_recorded_template_pins_a_repeat_init() {
+        let recorded = crate::manifest::Template {
+            url: DEFAULT_URL.to_owned(),
+            reference: "v0.1.0".to_owned(),
+            sha: "0000000".to_owned(),
+        };
+        let mut same = Source::parse(None).expect("default parses");
+        same.pinned_by(Some(&recorded));
+        assert_eq!(same.reference, Reference::Named("v0.1.0".to_owned()));
+
+        let mut other = Source::parse(Some("git@github.com:someone/else.git")).expect("parses");
+        other.pinned_by(Some(&recorded));
+        assert_eq!(other.reference, Reference::LatestStable);
+
+        let mut explicit = Source::parse(Some(
+            "git@github.com:aw-tools/workspace.template.git@v0.2.0",
+        ))
+        .expect("parses");
+        explicit.pinned_by(Some(&recorded));
+        assert_eq!(explicit.reference, Reference::Named("v0.2.0".to_owned()));
+    }
+
+    #[test]
     fn picks_the_highest_stable_tag_and_skips_everything_else() {
         let tags = [
             "v0.1.0",
@@ -396,10 +467,13 @@ mod tests {
             url: seed.path().display().to_string(),
             reference: Reference::LatestStable,
         };
+        // A branch sharing the tag's name must not make the tag ambiguous.
+        git::run(seed.path(), &["branch", "v0.2.0", "v0.1.0"]).expect("branch fixture");
         let prepared = prepare(&source).expect("a stable tag exists");
         assert_eq!(prepared.reference, "v0.2.0");
-        let expected = git_stdout(seed.path(), &["rev-parse", "v0.2.0^{commit}"]);
-        assert_eq!(prepared.sha, expected);
+        let expected =
+            git::run(seed.path(), &["rev-parse", "refs/tags/v0.2.0^{commit}"]).expect("rev-parse");
+        assert_eq!(prepared.sha, expected.trim());
     }
 
     #[test]
@@ -412,9 +486,11 @@ mod tests {
         let Err(error) = prepare(&source) else {
             panic!("a template without a stable tag must be refused")
         };
+        let message = format!("{error:#}");
+        assert!(message.contains("no stable release tag"), "{message}");
         assert!(
-            error.to_string().contains("no stable release tag"),
-            "unexpected error: {error:#}"
+            message.contains(&format!("--template {}@<ref>", seed.path().display())),
+            "{message}"
         );
     }
 
@@ -423,7 +499,7 @@ mod tests {
     fn tagged_template(tags: &[&str]) -> TemporaryDirectory {
         let seed = TemporaryDirectory::new().expect("temporary directory");
         let dir = seed.path();
-        git_stdout(dir, &["init", "--quiet", "--initial-branch=main"]);
+        git::run(dir, &["init", "--quiet", "--initial-branch=main"]).expect("init fixture");
         std::fs::write(dir.join(".gitignore"), "*\n!.gitignore\n!workspace.toml\n")
             .expect("gitignore fixture");
         for tag in tags {
@@ -432,8 +508,8 @@ mod tests {
                 format!("# {tag}\n[workspace]\nname = \"CHANGEME\"\n"),
             )
             .expect("manifest fixture");
-            git_stdout(dir, &["add", "-A"]);
-            git_stdout(
+            git::run(dir, &["add", "-A"]).expect("add fixture");
+            git::run(
                 dir,
                 &[
                     "-c",
@@ -445,25 +521,11 @@ mod tests {
                     "-m",
                     tag,
                 ],
-            );
-            git_stdout(dir, &["tag", tag]);
+            )
+            .expect("commit fixture");
+            git::run(dir, &["tag", tag]).expect("tag fixture");
         }
         seed
-    }
-
-    fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git runs");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     #[test]
@@ -472,7 +534,7 @@ mod tests {
             Source::parse(Some("git@github.com:aw-tools/template.git")).expect("SSH URL parses"),
             Source {
                 url: "git@github.com:aw-tools/template.git".to_owned(),
-                reference: Reference::Head,
+                reference: Reference::LatestStable,
             }
         );
         assert_eq!(
@@ -511,7 +573,7 @@ mod tests {
                 .expect("credential-free HTTPS URL parses"),
             Source {
                 url: "https://example.com/org/template.git".to_owned(),
-                reference: Reference::Head,
+                reference: Reference::LatestStable,
             }
         );
         assert_eq!(

@@ -772,7 +772,7 @@ fn resolved_git_path(dir: &Path, option: &str, description: &str) -> Result<Path
         .with_context(|| format!("resolving {description} {}", path.display()))
 }
 
-fn run(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
