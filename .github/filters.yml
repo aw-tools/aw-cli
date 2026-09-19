@@ -46,6 +46,7 @@ prose:
 scripts:
   - *ci
   - bin/**
+  - scripts/**
   - tests/*.sh
 
 workflows:
