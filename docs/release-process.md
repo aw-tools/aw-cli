@@ -64,7 +64,7 @@ GitHub.
 Never empty the reviewers list. It is the boundary between pushing code and
 shipping a release.
 
-On your machine you need `just`, `dprint` and `gh` signed in to the repository.
+On your machine you need `just`, `dprint` and `gh` installed and configured.
 Start every release from a clean working tree on `main`.
 
 ## Versioning before 1.0
