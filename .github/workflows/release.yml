@@ -106,14 +106,16 @@ jobs:
         with:
           tool: cargo-zigbuild@0.20.0
       - run: cargo zigbuild --release --target ${{ matrix.target }}
+      # The archive name carries no version, so `releases/latest/download/` in
+      # the README resolves without naming one and never goes stale. The tag is
+      # in the redirect path, and `aw --version` reports it.
       - name: Package the tarball
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
           stage="$(mktemp -d)"
-          archive="aw-${version}-${TARGET}.tar.gz"
+          archive="aw-${TARGET}.tar.gz"
           cp "target/${TARGET}/release/aw" "${stage}/aw"
           cp LICENSE-MIT LICENSE-APACHE README.md "${stage}/"
           tar -czf "${archive}" -C "${stage}" .
