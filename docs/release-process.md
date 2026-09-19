@@ -1,15 +1,14 @@
 # Release process
 
-How to cut an `aw` release. This runbook covers the prerequisites, the version
-rules and the cut itself. It also covers what to check afterwards, hotfixes,
-recovery from each failure and how to withdraw a release.
+This runbook says how to cut an `aw` release, check it, hotfix it, recover from
+a failed cut and withdraw it.
 
 ## Overview
 
-A release starts when a `v*` tag is pushed from `main`. The release workflow
-runs the quality gate with `just ci` on the tagged commit, cross-compiles four
+A release starts when you push a `v*` tag from `main`. The release workflow runs
+the quality gate with `just ci` on the tagged commit, cross-compiles four
 binaries, writes a `SHA256SUMS` file and publishes a GitHub release. The release
-body is the matching section of `CHANGELOG.md`. The publish step waits at the
+body is the matching section of `CHANGELOG.md`. The publish job waits at the
 `release` GitHub Environment for the owner's approval, so push permission alone
 cannot ship a release.
 
@@ -21,7 +20,7 @@ README.
 ## Prerequisites
 
 The owner sets up the `release` Environment once. It has two halves, and both
-are needed. Required reviewers gate the publish step, and a deployment rule says
+are needed. Required reviewers gate the publish job, and a deployment rule says
 which refs may reach the gate at all.
 
 Add the owner as a required reviewer:
@@ -58,8 +57,8 @@ gh api /repos/aw-tools/aw-cli/environments/release/deployment-branch-policies \
 Without reviewers the publish job waits without end. Configure the reviewers,
 then approve the pending deployment; no new tag is needed. Without the tag rule
 the publish job fails at the gate. Add the rule, then rerun the failed job with
-`gh run rerun <run-id> --failed`; this is safe because nothing was created on
-GitHub.
+`gh run rerun <run-id> --failed`; this is safe because the run created nothing
+on GitHub.
 
 Never empty the reviewers list. It is the boundary between pushing code and
 shipping a release.
@@ -78,14 +77,15 @@ Before 1.0 the version rules are loose on purpose.
 | `v1.0.0`             | A public stability promise the project has not made. |
 
 Bump the minor version (`v0.X.0`) for a new capability or a change to what the
-manifest accepts. Bump the patch version (`v0.0.Z`) for fixes alone.
+manifest, `workspace.toml`, accepts. Bump the patch version (`v0.0.Z`) for fixes
+alone.
 
-The first release is `v0.1.0`, preceded by `v0.1.0-rc.1` to prove the pipeline
-on a tag that nobody installs.
+The first release is `v0.1.0`. Tag `v0.1.0-rc.1` first, to prove the pipeline on
+a tag that nobody installs.
 
 ### What an upgrade may change
 
-Within `0.x`, a release may add optional keys to `workspace.toml` and never
+Within `0.x`, a release may add optional keys to `workspace.toml`. It never
 removes or renames one. A removal or a rename is a minor release, and its
 changelog entry says how to migrate. An upgrade never edits your manifest for
 you.
@@ -115,8 +115,9 @@ schedule, because a schedule pushes out empty releases.
    anything on an invalid version, a missing `[Unreleased]` heading, an existing
    section for that version or an empty block.
 
-4. Open a pull request from a `ci/` branch. The `chore/` prefix is not on the
-   branch list, and release plumbing sits closest to CI:
+4. Open a pull request from a `ci/` branch. Branch names take one of six
+   prefixes, `feat`, `fix`, `refactor`, `doc`, `ci` or `deps`, and release
+   plumbing sits closest to CI:
 
    ```sh
    git checkout -b ci/release-0.1.0
@@ -127,7 +128,7 @@ schedule, because a schedule pushes out empty releases.
 
    Wait for CI. The owner merges.
 
-5. Tag from `main` and nowhere else. The tag is signed:
+5. Tag from `main` and nowhere else. Sign the tag:
 
    ```sh
    git checkout main
@@ -149,10 +150,6 @@ schedule, because a schedule pushes out empty releases.
      -F "state=approved" \
      -F "comment=approving v0.1.0"
    ```
-
-A hotfix rotates the whole `[Unreleased]` block, including lines that are not
-part of the fix. After `release-prep`, move those lines back under a fresh
-`[Unreleased]` heading before you commit.
 
 ## Post-release verification
 
@@ -188,16 +185,20 @@ git commit -am 'chore(release): prepare 0.1.1'
 # pull request, merge and tag from main as usual
 ```
 
-Never tag a hotfix branch. Every released commit is reachable from `main`. If
-the fix conflicts with `main` beyond a clean cherry-pick, cut a minor release
-instead of forcing a hotfix.
+For a hotfix, `just release-prep` rotates the whole `[Unreleased]` block,
+including lines that are not part of the fix. Move those lines back under a
+fresh `[Unreleased]` heading before you commit.
+
+Never tag a hotfix branch, so that every released commit is reachable from
+`main`. If the fix conflicts with `main` beyond a clean cherry-pick, cut a minor
+release instead of forcing a hotfix.
 
 ## Prerelease promotion
 
 When a release candidate becomes stable, keep the candidate tags and releases as
-they are. They are the public record of how the release was reached. GitHub
-leaves prereleases out of `latest`, so the pointer moves to the stable release
-on its own and the install instructions keep resolving.
+they are. They are the public record of the path to the release. GitHub leaves
+prereleases out of `latest`, so the pointer moves to the stable release on its
+own and the install instructions keep resolving.
 
 ## Failure modes
 
@@ -255,14 +256,17 @@ Never reuse a version. Retagging without thought is how broken binaries ship.
 Do not rerun a failed release workflow, in the browser or with
 `gh run rerun --failed`. The first run may have created state on GitHub that the
 rerun collides with. Delete the release and the tag, bump the version and cut
-again. Rerunning is safe for the CI workflow and unsafe for the release
-workflow.
+again.
 
-## Yank and rollback
+Rerunning is safe for the CI workflow and unsafe for the release workflow. The
+one exception is a run that failed at the gate before the publish job ran, as
+described under Prerequisites.
 
-A release is withdrawn when a defect turns up after publication. The archives
-stay on the release page so the checksums remain on record, and `latest` skips
-the release.
+## Withdrawing a release
+
+Withdraw a release when a defect turns up after publication. The archives stay
+on the release page so the checksums remain on record, and `latest` skips the
+release.
 
 ```sh
 # 1. Mark it a prerelease so latest moves back to the last good release.

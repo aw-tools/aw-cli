@@ -10,8 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `aw init` creates a workspace from the template at its latest stable release;
   `--template <url>@<ref>` picks another (#27)
-- `aw init` rejects a bad `--name` before it creates anything, and an `only`
-  entry that matches no skill is reported (#19)
+- `aw init` rejects a bad `--name` before it creates anything, and reports an
+  `only` entry that matches no skill (#19)
 - `aw bootstrap` clones the missing repositories, applies the git identity,
   links skills and activates the workspace hooks (#5)
 - `aw doctor` checks the tools on your path, each remote's pinned branch and
@@ -27,8 +27,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `aw status` reports the health of every skill link (#13)
 - `aw sync` fetches every repository and relinks skills; a failed fetch exits
   non-zero (#14)
-- `aw sync` fetches the workspace layer too, and `aw status` ages each upstream
-  row from the last fetch (#23)
+- `aw sync` also fetches the workspace layer, and `aw status` shows how long ago
+  each upstream row was fetched (#23)
 - `aw sync` fetches several repositories at once; `--concurrency N` or
   `sync.concurrency` sets the number (#25)
 - `aw adopt` adds an existing checkout to the manifest (#10)
