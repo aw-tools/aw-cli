@@ -1,0 +1,201 @@
+name: Release
+
+# Publishes a tagged release. The quality gate runs again on the tagged commit,
+# the four targets are cross-compiled from it, and the publish job waits at the
+# release Environment for the owner's approval. See docs/release-process.md.
+
+on:
+  push:
+    tags:
+      - v*
+
+# Deny by default. verify and build rely on the implicit contents: read that
+# checkout gets; only publish may mutate releases.
+permissions: {}
+
+# Runs for one tag are serialised rather than cancelled: a queued run fails fast
+# on `gh release create` because the release exists, which beats two publishes
+# racing each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  VALE_VERSION: 3.22.0
+  VALE_SHA256: 52f5cd0314a1b7384cac6aa102a68193977312f6ba9c9f3ae001b5deec8e3a10
+  SHELLCHECK_VERSION: 0.11.0
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  # The whole gate on the tagged commit. CI splits these steps across filtered
+  # jobs; here every one runs, because a tag is the last point at which the
+  # gate still means anything.
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+        with:
+          rustflags: ""
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: just
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: dprint@0.55.2
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: cargo-deny
+      # `aw` shells out to garden; the e2e harness needs it on PATH. Pinned to
+      # the version doctor's MIN_VERSION floor (2.6) expects, matching CI.
+      - name: Install garden
+        run: cargo install --locked garden-tools --version 2.6.1
+      - name: Install Vale
+        run: |
+          curl -fsSLo vale.tar.gz "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
+          tar -xzf vale.tar.gz -C /usr/local/bin vale
+          vale --version
+      - name: Install shellcheck
+        run: |
+          curl -fsSLo shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf shellcheck.tar.xz --strip-components=1 -C /usr/local/bin "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          shellcheck --version
+      - name: Install actionlint
+        run: |
+          curl -fsSLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz -C /usr/local/bin actionlint
+          actionlint -version
+      - run: just ci
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs:
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+        with:
+          rustflags: ""
+          target: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: cargo-zigbuild@0.20.0
+      - run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Package the tarball
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage="$(mktemp -d)"
+          archive="aw-${version}-${TARGET}.tar.gz"
+          cp "target/${TARGET}/release/aw" "${stage}/aw"
+          cp LICENSE-MIT LICENSE-APACHE README.md "${stage}/"
+          tar -czf "${archive}" -C "${stage}" .
+          mkdir -p dist
+          mv "${archive}" "dist/${archive}"
+      # Seven days, not one: publish waits at the approval gate, and a one-day
+      # retention loses the binaries over a weekend. Recovery would need a
+      # fresh tag and a full rebuild.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aw-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The release Environment names the owner as a required reviewer, so this job
+  # pauses until the owner approves it. That list is the only thing stopping a
+  # token holder from approving through the API: push permission alone cannot
+  # ship a release. Emptying it collapses the boundary. The timeout covers the
+  # steps after approval alone, because the wait is not charged against it.
+  publish:
+    name: Publish
+    needs:
+      - verify
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      # `--` rather than a bare glob, so the names stay plain and `sha256sum -c`
+      # finds them beside a downloaded archive.
+      - name: Compute the checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz > SHA256SUMS
+      # The section match is a literal index, not a regex, so a version holding
+      # a metacharacter cannot silently produce an empty body, and the end
+      # anchor is `## [` so a `##` inside a code fence does not truncate it.
+      # The body is data: it reaches gh through --notes-file and never through
+      # `${{ }}`, which would run a backtick in the changelog as a command.
+      - name: Extract the release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${VERSION#v}"
+          awk -v ver="$ver" '
+              !in_section && index($0, "## [" ver "]") == 1 { in_section = 1; next }
+              in_section && /^## \[/                        { in_section = 0 }
+              in_section                                    { print }
+          ' CHANGELOG.md > /tmp/release-body.md
+          # grep, not `[ -s ]`, which counts a lone newline as a body.
+          if ! grep -q '[^[:space:]]' /tmp/release-body.md; then
+            echo "CHANGELOG.md has no usable '## [${ver}]' section body."
+            echo "Run 'just release-prep ${ver}' and tag again."
+            exit 1
+          fi
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          if [[ "$VERSION" == *-alpha* || "$VERSION" == *-beta* || "$VERSION" == *-rc* ]]; then
+            prerelease=true
+          fi
+          gh release create "$VERSION" --title "$VERSION" --notes-file /tmp/release-body.md --prerelease="$prerelease" --repo "$REPOSITORY"
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$VERSION" dist/*.tar.gz dist/SHA256SUMS --repo "$REPOSITORY"
