@@ -1,0 +1,10 @@
+# The version heading says when. An entry says what the user can do or no
+# longer suffers, never that it is so "now".
+extends: existence
+message: "'%s' says when. The version heading already does."
+level: error
+ignorecase: true
+tokens:
+  - now
+  - previously
+  - currently

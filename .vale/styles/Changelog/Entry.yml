@@ -1,0 +1,9 @@
+# An entry is one bullet that ends with its pull request number. Matches a
+# bullet whose text, across any wrapped lines, does not end in `(#N)`.
+extends: existence
+message: "Entry must end with its pull request number, like (#12)."
+level: error
+scope: raw
+nonword: true
+tokens:
+  - '(?m)^- (?!(?:[^\n]|\n[ \t]+\S)*\(#\d+\)\n(?:\n|- |$))'

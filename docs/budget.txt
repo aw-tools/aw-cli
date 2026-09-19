@@ -1,0 +1,4 @@
+# Word budget per document, counted by `wc -w` over the whole file, paths from
+# the repository root. The only place a ceiling lives. Raise a line in a commit
+# that says why.
+README.md 400

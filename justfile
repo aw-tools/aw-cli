@@ -38,16 +38,28 @@ doc:
 install:
     cargo install --path .
 
+# Lint the human-facing documents
+vale:
+    vale README.md CHANGELOG.md docs
+
+# Check every document against its word budget
+budget:
+    bin/lint-docs-budget
+
+# Prove every prose rule fires on its fixture
+test-lint:
+    bin/test-lint-docs
+
 # Lint the shell scripts
 shellcheck:
-    shellcheck tests/*.sh
+    shellcheck bin/* tests/*.sh
 
 # Lint the GitHub Actions workflows
 actionlint:
     actionlint
 
 # Run the full CI pipeline
-ci: fmt clippy test doc deny e2e shellcheck actionlint
+ci: fmt clippy test doc deny e2e vale budget test-lint shellcheck actionlint
 
 # Configure git hooks (run once after clone)
 setup:
