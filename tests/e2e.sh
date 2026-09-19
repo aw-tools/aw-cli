@@ -3,6 +3,11 @@
 #
 # Builds isolated throwaway workspaces against shared local bare repositories.
 # Requires `garden` on PATH.
+#
+# Each case runs in a subshell that reassigns WORK and is called by name, and
+# grep patterns quote `aw` output that contains backticks; shellcheck cannot
+# see any of that.
+# shellcheck disable=SC2016,SC2030,SC2031,SC2329
 set -eu
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -113,7 +118,7 @@ git -C "$WORK/seed-template" -c user.name=t -c user.email=t@t \
 RELEASE_SHA="$(git -C "$WORK/seed-template" rev-parse HEAD)"
 git -C "$WORK/seed-template" switch -q main
 git clone -q --bare "$WORK/seed-template" "$WORK/origins/template.git"
-TEMPLATE_SHA="$(git -C "$WORK/seed-template" rev-parse fixture-v1^{commit})"
+TEMPLATE_SHA="$(git -C "$WORK/seed-template" rev-parse 'fixture-v1^{commit}')"
 git clone -q "$WORK/seed-template" "$WORK/seed-conflicting-template"
 echo 'must never reach the target' >"$WORK/seed-conflicting-template/conflicting-source.txt"
 git -C "$WORK/seed-conflicting-template" add conflicting-source.txt
@@ -452,9 +457,9 @@ assert "first-appearance wins a cross-repo name collision" \
 	"$(grep -Ec 'shadowed  deploy at .* is ignored because member repo is already sourced' \
 		"$WORK/boot1.log")" 1
 assert "the shadowed copy contributes no namespaced link" \
-	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'deploy' || true)" 1
+	"$(find "$WORK/demo.workspace/.claude/skills" -mindepth 1 -maxdepth 1 -name '*deploy*' | wc -l | tr -d ' ')" 1
 assert "opted-out repo contributes nothing" \
-	"$(ls "$WORK/demo.workspace/.claude/skills" | grep -c 'alpha-hidden')" 0
+	"$(find "$WORK/demo.workspace/.claude/skills" -mindepth 1 -maxdepth 1 -name '*alpha-hidden*' | wc -l | tr -d ' ')" 0
 for dir in .claude/skills .agents/skills; do
 	assert "dedicated skills repo links a skill from its src dir in $dir" \
 		"$(grep -c 'Shared pipeline skill' \
@@ -890,13 +895,13 @@ setup_status_fixtures
 
 assert "ahead fixture is ahead" \
 	"$(git -C "$WORK/status.workspace/ahead" rev-list --left-right --count \
-		HEAD...@{upstream} | tr '\t' ' ')" "1 0"
+		'HEAD...@{upstream}' | tr '\t' ' ')" "1 0"
 assert "behind fixture is behind" \
 	"$(git -C "$WORK/status.workspace/behind" rev-list --left-right --count \
-		HEAD...@{upstream} | tr '\t' ' ')" "0 1"
+		'HEAD...@{upstream}' | tr '\t' ' ')" "0 1"
 assert "divergent fixture is ahead and behind" \
 	"$(git -C "$WORK/status.workspace/divergent" rev-list --left-right --count \
-		HEAD...@{upstream} | tr '\t' ' ')" "1 1"
+		'HEAD...@{upstream}' | tr '\t' ' ')" "1 1"
 assert "dirty fixture has worktree changes" \
 	"$(git -C "$WORK/status.workspace/dirty" status --porcelain | wc -l | tr -d ' ')" 1
 assert "missing fixture is not cloned" \
@@ -1259,7 +1264,7 @@ assert "sync rejects a member resolving to the workspace repository" \
 		"$WORK/sync.log")" 1
 for name in beta gamma skills; do
 	assert "sync reports $name fetched" \
-		"$(grep -c "^repo[[:space:]]*$name[[:space:]]*fetched" \
+		"$(grep -c "^repo[[:space:]]*${name}[[:space:]]*fetched" \
 			"$WORK/sync.log")" 1
 done
 assert "sync continues fetching after a failure" \
@@ -1439,7 +1444,7 @@ assert "sync --concurrency 1 reports in manifest order" \
 assert "sync --concurrency 1 writes nothing to stderr" \
 	"$(wc -c <"$WORK/sync-serial.err" | tr -d ' ')" 0
 assert "sync --concurrency 1 leaves no escape sequences on stdout" \
-	"$(grep -c $'\033' "$WORK/sync-serial.log" || true)" 0
+	"$(grep -c "$(printf '\033')" "$WORK/sync-serial.log" || true)" 0
 
 # A concurrent run reports the same rows, in some order, and writes no progress
 # artefacts when redirected.
@@ -1456,7 +1461,7 @@ assert "sync --concurrency 8 reports every repository exactly once" \
 assert "sync --concurrency 8 writes nothing to stderr" \
 	"$(wc -c <"$WORK/sync-parallel.err" | tr -d ' ')" 0
 assert "sync --concurrency 8 leaves no escape sequences on stdout" \
-	"$(grep -c $'\033' "$WORK/sync-parallel.log" || true)" 0
+	"$(grep -c "$(printf '\033')" "$WORK/sync-parallel.log" || true)" 0
 assert "sync --concurrency 8 keeps the verify tally" \
 	"$(grep -c '^verify    5 repo(s), 1 skipped, 0 failed,' \
 		"$WORK/sync-parallel.log")" 1
