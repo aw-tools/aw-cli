@@ -52,7 +52,21 @@ test-lint:
 
 # Lint the shell scripts
 shellcheck:
-    shellcheck bin/* tests/*.sh
+    shellcheck bin/* scripts/* tests/*.sh
+
+# Print candidate changelog lines from the commit log.
+#
+# Do NOT write this output into CHANGELOG.md — git-cliff regeneration clobbers
+# the hand-written entries every pull request adds. Use it to check nothing was
+# missed; `just release-prep VERSION` rotates the existing block in place. See
+# docs/release-process.md.
+changelog:
+    git cliff --unreleased
+
+# Bump Cargo.toml version and rotate CHANGELOG [Unreleased] for a release.
+# See docs/release-process.md for the full procedure.
+release-prep VERSION:
+    bash scripts/release-prep.sh {{ VERSION }}
 
 # Lint the GitHub Actions workflows
 actionlint:
