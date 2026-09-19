@@ -583,3 +583,5 @@ mod tests {
         assert!(text.contains("[workspace]\nname = \"demo\""));
     }
 }
+
+// Probe: a change under src/ with no changelog entry. Never merged.
