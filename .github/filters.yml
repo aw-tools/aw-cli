@@ -33,6 +33,11 @@ e2e:
   - *rust
   - tests/e2e.sh
 
+scripts:
+  - *ci
+  - bin/**
+  - tests/*.sh
+
 workflows:
   - *ci
   - .github/workflows/**

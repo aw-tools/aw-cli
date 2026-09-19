@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SHELLCHECK_VERSION: 0.11.0
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
 
@@ -34,6 +36,7 @@ jobs:
       fmt: ${{ steps.filter.outputs.fmt }}
       deny: ${{ steps.filter.outputs.deny }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      scripts: ${{ steps.filter.outputs.scripts }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -205,6 +208,27 @@ jobs:
           tool: cargo-zigbuild@0.20.0
       - run: cargo zigbuild --release --target ${{ matrix.target }}
 
+  scripts:
+    name: Scripts
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: just
+      - name: Install shellcheck
+        run: |
+          curl -fsSLo shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf shellcheck.tar.xz --strip-components=1 -C /usr/local/bin "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          shellcheck --version
+      - run: just shellcheck
+
   workflows:
     name: Workflows
     needs: changes
@@ -240,6 +264,7 @@ jobs:
       - deny
       - e2e
       - cross-compile
+      - scripts
       - workflows
     if: always()
     steps:
@@ -256,7 +281,7 @@ jobs:
             echo "Detecting changes ended with result: ${{ needs.changes.result }}"
             exit 1
           fi
-          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.workflows.result }}")
+          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.scripts.result }}" "${{ needs.workflows.result }}")
           for r in "${results[@]}"; do
             if [[ "$r" == "success" || "$r" == "skipped" ]]; then continue; fi
             echo "Job failed with result: $r"
