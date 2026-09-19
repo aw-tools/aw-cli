@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  VALE_VERSION: 3.22.0
+  VALE_SHA256: 52f5cd0314a1b7384cac6aa102a68193977312f6ba9c9f3ae001b5deec8e3a10
   SHELLCHECK_VERSION: 0.11.0
   SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   ACTIONLINT_VERSION: 1.7.12
@@ -36,8 +38,11 @@ jobs:
       fmt: ${{ steps.filter.outputs.fmt }}
       deny: ${{ steps.filter.outputs.deny }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      prose: ${{ steps.filter.outputs.prose }}
       scripts: ${{ steps.filter.outputs.scripts }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      changelog: ${{ steps.filter.outputs.changelog }}
+      changelog-entry: ${{ steps.filter.outputs.changelog-entry }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -208,6 +213,31 @@ jobs:
           tool: cargo-zigbuild@0.20.0
       - run: cargo zigbuild --release --target ${{ matrix.target }}
 
+  prose:
+    name: Prose
+    needs: changes
+    if: needs.changes.outputs.prose == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: just
+      - name: Install Vale
+        run: |
+          curl -fsSLo vale.tar.gz "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
+          tar -xzf vale.tar.gz -C /usr/local/bin vale
+          vale --version
+      - run: just vale
+      - run: just budget
+        if: success() || failure()
+      - run: just test-lint
+        if: success() || failure()
+
   scripts:
     name: Scripts
     needs: changes
@@ -250,6 +280,36 @@ jobs:
           actionlint -version
       - run: just actionlint
 
+  changelog:
+    name: Changelog
+    needs: changes
+    if: needs.changes.outputs.changelog == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # A change under src/ is one a user of the binary may notice, so it
+      # carries a changelog entry or the no-changelog label. Labels are read
+      # at run time, so labelling and re-running the job is enough.
+      - name: Require a changelog entry or the no-changelog label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENTRY: ${{ needs.changes.outputs.changelog-entry }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ "$ENTRY" == "true" ]]; then
+            echo "CHANGELOG.md changed."
+            exit 0
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels" --jq '.[].name' | grep -qx 'no-changelog'; then
+            echo "Labelled no-changelog."
+            exit 0
+          fi
+          echo "src/ changed without a CHANGELOG.md entry. Add one under [Unreleased] or label the pull request no-changelog."
+          exit 1
+
   ci:
     name: CI
     runs-on: ubuntu-latest
@@ -264,8 +324,10 @@ jobs:
       - deny
       - e2e
       - cross-compile
+      - prose
       - scripts
       - workflows
+      - changelog
     if: always()
     steps:
       - name: Check all jobs
@@ -281,7 +343,7 @@ jobs:
             echo "Detecting changes ended with result: ${{ needs.changes.result }}"
             exit 1
           fi
-          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.scripts.result }}" "${{ needs.workflows.result }}")
+          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.prose.result }}" "${{ needs.scripts.result }}" "${{ needs.workflows.result }}" "${{ needs.changelog.result }}")
           for r in "${results[@]}"; do
             if [[ "$r" == "success" || "$r" == "skipped" ]]; then continue; fi
             echo "Job failed with result: $r"
