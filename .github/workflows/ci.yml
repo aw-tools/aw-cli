@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
 
 permissions:
   contents: read
@@ -17,9 +19,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Every other job runs only when a file in its area changed; the areas live
+  # in .github/filters.yml.
+  changes:
+    name: Detect changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      fmt: ${{ steps.filter.outputs.fmt }}
+      deny: ${{ steps.filter.outputs.deny }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: .github/filters.yml
+
   fmt:
     name: Format
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.fmt == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,7 +67,8 @@ jobs:
 
   clippy:
     name: Clippy
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -56,7 +85,8 @@ jobs:
 
   test:
     name: Test
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -73,7 +103,8 @@ jobs:
 
   msrv:
     name: MSRV (1.85.0)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -88,7 +119,8 @@ jobs:
 
   doc:
     name: Doc
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -105,7 +137,8 @@ jobs:
 
   deny:
     name: Deny
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -122,7 +155,8 @@ jobs:
 
   e2e:
     name: E2E
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -143,7 +177,8 @@ jobs:
 
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -170,23 +205,60 @@ jobs:
           tool: cargo-zigbuild@0.20.0
       - run: cargo zigbuild --release --target ${{ matrix.target }}
 
+  workflows:
+    name: Workflows
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: just
+      - name: Install actionlint
+        run: |
+          curl -fsSLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz -C /usr/local/bin actionlint
+          actionlint -version
+      - run: just actionlint
+
   ci:
     name: CI
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [fmt, clippy, test, msrv, doc, deny, e2e, cross-compile]
+    needs:
+      - changes
+      - fmt
+      - clippy
+      - test
+      - msrv
+      - doc
+      - deny
+      - e2e
+      - cross-compile
+      - workflows
     if: always()
     steps:
       - name: Check all jobs
         run: |
-          # Allowlist: accept success always; accept a skip only on non-pull-request
-          # events, where the heavy jobs skip by design so the required gate stays
-          # green on main. Any other result (including an unexpected skip on a pull
-          # request) fails the gate.
-          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}")
+          # On a pull request the changes job must succeed and every other job
+          # must succeed or be skipped by its filter. On any other event every
+          # job skips by design, so the required gate stays green on main.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "Not a pull request; nothing to check."
+            exit 0
+          fi
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "Detecting changes ended with result: ${{ needs.changes.result }}"
+            exit 1
+          fi
+          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.workflows.result }}")
           for r in "${results[@]}"; do
-            if [[ "$r" == "success" ]]; then continue; fi
-            if [[ "$r" == "skipped" && "${{ github.event_name }}" != "pull_request" ]]; then continue; fi
+            if [[ "$r" == "success" || "$r" == "skipped" ]]; then continue; fi
             echo "Job failed with result: $r"
             exit 1
           done

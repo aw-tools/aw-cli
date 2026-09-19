@@ -1,0 +1,38 @@
+# Areas of impact, one per job group in ci.yml. A job runs on a pull request
+# only when a file in its area changed. The ci anchor names what every job
+# depends on: a change there flips every area on.
+ci: &ci
+  - .github/filters.yml
+  - .github/workflows/ci.yml
+  - justfile
+
+rust: &rust
+  - *ci
+  - Cargo.lock
+  - Cargo.toml
+  - rust-toolchain.toml
+  - src/**
+  - tests/**
+
+fmt:
+  - *ci
+  - dprint.json
+  - "**/*.json"
+  - "**/*.md"
+  - "**/*.rs"
+  - "**/*.toml"
+  - "**/*.yml"
+
+deny:
+  - *ci
+  - Cargo.lock
+  - Cargo.toml
+  - deny.toml
+
+e2e:
+  - *rust
+  - tests/e2e.sh
+
+workflows:
+  - *ci
+  - .github/workflows/**

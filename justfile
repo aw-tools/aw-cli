@@ -38,8 +38,12 @@ doc:
 install:
     cargo install --path .
 
+# Lint the GitHub Actions workflows
+actionlint:
+    actionlint
+
 # Run the full CI pipeline
-ci: fmt clippy test doc deny e2e
+ci: fmt clippy test doc deny e2e actionlint
 
 # Configure git hooks (run once after clone)
 setup:
