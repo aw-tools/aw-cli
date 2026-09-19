@@ -1,0 +1,60 @@
+name: PR health check
+
+# Checks the shape of the pull request itself, not the code in it. Separate from
+# the CI workflow so that editing a title reruns these checks alone, and so a
+# failure here reads as a malformed pull request rather than a broken build.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Pull requests are squash merged, so the title becomes the only commit
+      # subject on main and the changelog recipe reads it back out of the log.
+      # The types are the ones in CONTRIBUTING.md.
+      - name: Require a conventional commit title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The pattern is held in a variable: bash eats the backslashes that
+          # escape the scope parentheses when the regex is written inline.
+          pattern='^(feat|fix|refactor|chore|doc|deps|test|ci)(\([a-z0-9-]+\))?!?: .+'
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "Title: $TITLE"
+            exit 0
+          fi
+          echo "Title does not match 'type(scope): subject': $TITLE"
+          echo "Types: feat, fix, refactor, chore, doc, deps, test, ci. The scope is optional, '!' marks a breaking change."
+          exit 1
+
+  pr-health-check:
+    name: PR health check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - title
+    if: always()
+    steps:
+      - name: Check all jobs
+        run: |
+          # The aggregate is the required check, so adding a job above is a
+          # workflow change alone and never a branch-protection change.
+          results=("${{ needs.title.result }}")
+          for r in "${results[@]}"; do
+            if [[ "$r" == "success" ]]; then continue; fi
+            echo "Job failed with result: $r"
+            exit 1
+          done

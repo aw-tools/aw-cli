@@ -16,6 +16,19 @@ with a conformance suite beside it. Read the contract before changing what a
 verb does: a behaviour change that breaks a suite fixture is a contract change,
 and those are made there first.
 
+## Commits
+
+Commit subjects and pull request titles take the form `type(scope): subject`,
+where the type is one of `feat`, `fix`, `refactor`, `chore`, `doc`, `deps`,
+`test` or `ci`. The scope is optional and a trailing `!` marks a breaking
+change. Branch names take one of six prefixes: `feat`, `fix`, `refactor`, `doc`,
+`ci` or `deps`.
+
+Pull requests are squash merged, so the title becomes the only commit subject
+that reaches `main`, and the release tooling reads those subjects back out of
+the log. The `PR health check` workflow fails a pull request whose title does
+not match. Fixing the title in place turns the check green; no push is needed.
+
 ## Changelog
 
 A pull request that changes what a user of the binary sees or can do adds one
