@@ -1,4 +1,4 @@
-name: PR health check
+name: Pull request health
 
 # Checks the shape of the pull request itself, not the code in it. Separate from
 # the CI workflow so that editing a title reruns these checks alone, and so a

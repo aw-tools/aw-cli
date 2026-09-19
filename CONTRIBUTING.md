@@ -26,8 +26,9 @@ change. Branch names take one of six prefixes: `feat`, `fix`, `refactor`, `doc`,
 
 Pull requests are squash merged, so the title becomes the only commit subject
 that reaches `main`, and the release tooling reads those subjects back out of
-the log. The `PR health check` workflow fails a pull request whose title does
-not match. Fixing the title in place turns the check green; no push is needed.
+the log. The `Pull request health` workflow reports a `PR health check` status,
+and that check fails when the title does not match. Fixing the title in place
+turns it green; no push is needed.
 
 ## Changelog
 
