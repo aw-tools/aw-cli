@@ -14,8 +14,9 @@ cannot ship a release.
 
 The four targets are `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
 `aarch64-apple-darwin` and `x86_64-apple-darwin`. Each archive is named
-`aw-<version>-<target>.tar.gz` and holds the binary, both licence files and the
-README.
+`aw-<target>.tar.gz` and holds the binary, both licence files and the README.
+The name carries no version, so the README's install snippet points at
+`releases/latest/download/` and never goes stale.
 
 ## Prerequisites
 
@@ -153,13 +154,14 @@ schedule, because a schedule pushes out empty releases.
 
 ## Post-release verification
 
-Check the release from a clean directory on at least one machine:
+Check the release from a clean directory on at least one machine. Name the tag,
+not `latest`, which never points at a prerelease:
 
 ```sh
-curl -LO https://github.com/aw-tools/aw-cli/releases/latest/download/aw-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/aw-tools/aw-cli/releases/latest/download/SHA256SUMS
+base=https://github.com/aw-tools/aw-cli/releases/download/v0.1.0
+curl -LO "$base/aw-x86_64-unknown-linux-gnu.tar.gz" -O "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS --ignore-missing
-tar xzf aw-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf aw-x86_64-unknown-linux-gnu.tar.gz
 ./aw --version
 ./aw doctor <an existing workspace>
 ```

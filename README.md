@@ -16,7 +16,28 @@ says what any workspace must do, with a conformance suite beside it.
 
 ## Install
 
-A Rust toolchain at 1.85 or later is required. Install from source:
+Download the archive for your platform from the
+[latest release](https://github.com/aw-tools/aw-cli/releases/latest), check it
+against the published checksums and put the binary on your `PATH`:
+
+```sh
+target=x86_64-unknown-linux-gnu
+base=https://github.com/aw-tools/aw-cli/releases/latest/download
+curl -LO "$base/aw-$target.tar.gz" -O "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
+tar xzf "aw-$target.tar.gz"
+install -m 755 aw ~/.local/bin/aw
+```
+
+The other targets are `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-apple-darwin`. On macOS the checksum tool is
+`shasum -a 256 -c SHA256SUMS --ignore-missing`.
+
+To upgrade, repeat those steps with a newer version; `install` replaces the
+binary in place. To uninstall, delete it: `aw` writes nothing outside the
+workspaces you create.
+
+Building from source needs a Rust toolchain at 1.85 or later:
 
 ```sh
 cargo install --git https://github.com/aw-tools/aw-cli aw-cli
