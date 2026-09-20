@@ -16,7 +16,16 @@ says what any workspace must do, with a conformance suite beside it.
 
 ## Install
 
-Download the archive for your platform from the
+With [Homebrew](https://brew.sh), on macOS or Linux:
+
+```sh
+brew install aw-tools/tap/aw-cli
+```
+
+The formula is named for the project; the command is `aw`. `brew upgrade` keeps
+it current.
+
+Otherwise download the archive for your platform from the
 [latest release](https://github.com/aw-tools/aw-cli/releases/latest), check it
 against the published checksums and put the binary on your `PATH`:
 
@@ -33,9 +42,8 @@ The other targets are `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
 `x86_64-apple-darwin`. On macOS the checksum tool is
 `shasum -a 256 -c SHA256SUMS --ignore-missing`.
 
-To upgrade, repeat those steps with a newer version; `install` replaces the
-binary in place. To uninstall, delete it: `aw` writes nothing outside the
-workspaces you create.
+To uninstall, delete the binary: `aw` writes nothing outside the workspaces you
+create.
 
 Building from source needs a Rust toolchain at 1.85 or later:
 

@@ -38,44 +38,59 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+
+      - name: Install the Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
         with:
           rustflags: ""
-      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+
+      - name: Install just
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
         with:
           tool: just
-      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+
+      - name: Install dprint
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
         with:
           tool: dprint@0.55.2
-      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
         with:
           tool: cargo-deny
+
       # `aw` shells out to garden; the e2e harness needs it on PATH. Pinned to
       # the version doctor's MIN_VERSION floor (2.6) expects, matching CI.
       - name: Install garden
         run: cargo install --locked garden-tools --version 2.6.1
+
       - name: Install Vale
         run: |
           curl -fsSLo vale.tar.gz "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
           echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
           tar -xzf vale.tar.gz -C /usr/local/bin vale
           vale --version
+
       - name: Install shellcheck
         run: |
           curl -fsSLo shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
           tar -xJf shellcheck.tar.xz --strip-components=1 -C /usr/local/bin "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           shellcheck --version
+
       - name: Install actionlint
         run: |
           curl -fsSLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz -C /usr/local/bin actionlint
           actionlint -version
-      - run: just ci
+
+      - name: Run the quality gate
+        run: just ci
 
   build:
     name: Build (${{ matrix.target }})
@@ -92,20 +107,30 @@ jobs:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+
+      - name: Install the Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
         with:
           rustflags: ""
           target: ${{ matrix.target }}
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
-      - uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
         with:
           tool: cargo-zigbuild@0.20.0
-      - run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Cross-compile the binary
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
       # The archive name carries no version, so `releases/latest/download/` in
       # the README resolves without naming one and never goes stale. The tag is
       # in the redirect path, and `aw --version` reports it.
@@ -121,10 +146,12 @@ jobs:
           tar -czf "${archive}" -C "${stage}" .
           mkdir -p dist
           mv "${archive}" "dist/${archive}"
+
       # Seven days, not one: publish waits at the approval gate, and a one-day
       # retention loses the binaries over a weekend. Recovery would need a
       # fresh tag and a full rebuild.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Upload the archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: aw-${{ matrix.target }}
           path: dist/
@@ -147,18 +174,23 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+
+      - name: Download the archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
+
       # `--` rather than a bare glob, so the names stay plain and `sha256sum -c`
       # finds them beside a downloaded archive.
       - name: Compute the checksums
         working-directory: dist
         run: sha256sum -- *.tar.gz > SHA256SUMS
+
       # The section match is a literal index, not a regex, so a version holding
       # a metacharacter cannot silently produce an empty body, and the end
       # anchor is `## [` so a `##` inside a code fence does not truncate it.
@@ -181,6 +213,7 @@ jobs:
             echo "Run 'just release-prep ${ver}' and tag again."
             exit 1
           fi
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -192,7 +225,9 @@ jobs:
           if [[ "$VERSION" == *-alpha* || "$VERSION" == *-beta* || "$VERSION" == *-rc* ]]; then
             prerelease=true
           fi
+          echo "PRERELEASE=${prerelease}" >> "$GITHUB_ENV"
           gh release create "$VERSION" --title "$VERSION" --notes-file /tmp/release-body.md --prerelease="$prerelease" --repo "$REPOSITORY"
+
       - name: Upload the assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,3 +236,25 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$VERSION" dist/*.tar.gz dist/SHA256SUMS --repo "$REPOSITORY"
+
+      # The tap is a separate repository, so the workflow token cannot reach it.
+      # An installation token can, and a commit made with one through the API
+      # carries GitHub's signature, which the tap's default branch requires.
+      - name: Mint a token for the tap
+        if: env.PRERELEASE == 'false'
+        id: tap-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.TAP_APP_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: aw-tools
+          repositories: homebrew-tap
+
+      # A prerelease is skipped deliberately: `brew install` must not hand
+      # people a release that was never meant to be the current one.
+      - name: Bump the Homebrew formula
+        if: env.PRERELEASE == 'false'
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          VERSION: ${{ github.ref_name }}
+        run: scripts/bump-tap-formula.sh

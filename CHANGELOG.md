@@ -6,6 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Each release updates the Homebrew tap, so `brew upgrade` finds it (#40)
+
 ## [0.1.0] - 2026-09-19
 
 ### Added
