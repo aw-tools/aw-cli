@@ -8,8 +8,7 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Install from Homebrew with `brew install aw-tools/tap/aw-cli`; each release
-  points the tap at itself (#40)
+- Each release updates the Homebrew tap, so `brew upgrade` finds it (#40)
 
 ## [0.1.0] - 2026-09-19
 
