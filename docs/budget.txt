@@ -2,4 +2,4 @@
 # the repository root. The only place a ceiling lives. Raise a line in a commit
 # that says why.
 README.md 450
-docs/release-process.md 1650
+docs/release-process.md 1850

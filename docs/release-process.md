@@ -168,6 +168,31 @@ tar xzf aw-x86_64-unknown-linux-gnu.tar.gz
 
 The checksum matches, the binary runs and the version string equals the tag.
 
+## The Homebrew formula
+
+The publish job bumps the formula in `aw-tools/homebrew-tap` as its last step,
+so a release never leaves the tap on the previous version. It runs
+`scripts/bump-tap-formula.sh`, which rewrites the tag in every download URL and
+the checksum beside it.
+
+That script commits through the GitHub API, using a token from a GitHub App
+installed on the tap. Its header says why neither the workflow token nor a git
+push would do. The app id and private key live on the `release` environment.
+
+Prereleases are skipped, so `brew install` never hands people a version that was
+not meant to be current.
+
+The script refuses rather than guesses. It fails on a missing checksum, a URL
+left on the old tag, or a checksum absent from the release. Rerunning it on a
+current formula does nothing and exits cleanly.
+
+Verify after a release on a clean machine:
+
+```sh
+brew install aw-tools/tap/aw-cli
+aw --version
+```
+
 ## Hotfix path
 
 A hotfix follows the same merge-then-tag flow, with one constraint: the branch
@@ -287,9 +312,11 @@ security at risk.
 
 ## Auditability
 
-Every write the workflow makes uses the repository's own token and lands in the
-repository audit log. Match a release's creation time against the workflow run
-that made it.
+Every write the workflow makes to this repository uses its own token and lands
+in the repository audit log. Match a release's creation time against the
+workflow run that made it. The one write outside this repository is the formula
+bump. It uses the tap app's installation token and lands in the tap's history,
+attributed to that app.
 
 ## Cross-compile workarounds
 
