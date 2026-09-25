@@ -1506,6 +1506,156 @@ mv "$WORK/demo.workspace/workspace.toml.bak" \
 	"$WORK/demo.workspace/workspace.toml"
 }
 
+# --- fast-forward -------------------------------------------------------------
+# One member per outcome, each with its own origin so each can sit where the
+# case needs it. Members listed in the order the report is read back.
+FF_PRESENT="advance current detached feature nohead noupstream elsewhere dirty picking diverged blocked later tagged"
+
+ff_member() { # name
+	git clone -q --bare "$WORK/ff-seed" "$WORK/ff-origins/$1.git"
+	git clone -q "$WORK/ff-origins/$1.git" "$WORK/ff.workspace/$1"
+}
+
+ff_advance_origin() { # name, file
+	git clone -q "$WORK/ff-origins/$1.git" "$WORK/ff-upstream-$1"
+	echo "$1 upstream" >"$WORK/ff-upstream-$1/$2"
+	git -C "$WORK/ff-upstream-$1" add "$2"
+	git -C "$WORK/ff-upstream-$1" -c user.name=t -c user.email=t@t \
+		commit -qm "upstream $1"
+	git -C "$WORK/ff-upstream-$1" push -q origin HEAD:main
+}
+
+ff_snapshot() { # suffix
+	for name in $FF_PRESENT; do
+		git -C "$WORK/ff.workspace/$name" rev-parse HEAD >"$WORK/$name.head.$1"
+		git -C "$WORK/ff.workspace/$name" status --porcelain >"$WORK/$name.status.$1"
+	done
+}
+
+ff_same() { # name, file stem, suffix a, suffix b
+	cmp -s "$WORK/$1.$2.$3" "$WORK/$1.$2.$4" && echo same || echo changed
+}
+
+case_fast_forward() {
+"$AW" init --template "$WORK/seed-template" \
+	"$WORK/ff.workspace" --name ff >"$WORK/ff-init.log" 2>&1
+git init -q --initial-branch=main "$WORK/ff-seed"
+echo base >"$WORK/ff-seed/file.txt"
+git -C "$WORK/ff-seed" add file.txt
+git -C "$WORK/ff-seed" -c user.name=t -c user.email=t@t commit -qm base
+mkdir -p "$WORK/ff-origins"
+for name in $FF_PRESENT absent; do
+	printf '\n[[repo]]\npath = "%s"\nurl = "%s"\n' \
+		"$name" "$WORK/ff-origins/$name.git" >>"$WORK/ff.workspace/workspace.toml"
+done
+for name in $FF_PRESENT; do
+	ff_member "$name"
+done
+for name in advance dirty picking diverged later tagged; do
+	ff_advance_origin "$name" file.txt
+done
+# The upstream adds a file the checkout already holds untracked, so git refuses
+# the move.
+ff_advance_origin blocked new.txt
+echo 'local untracked' >"$WORK/ff.workspace/blocked/new.txt"
+
+M="$WORK/ff.workspace"
+# A member pushed rather than cloned has no origin/HEAD; the verb creates it.
+git -C "$M/advance" remote set-head origin -d
+git -C "$M/detached" switch -q --detach
+git -C "$M/feature" switch -qc feature
+# Origin names a default branch that does not exist, so none can be learnt.
+git -C "$WORK/ff-origins/nohead.git" symbolic-ref HEAD refs/heads/gone
+git -C "$M/nohead" remote set-head origin -d
+git -C "$M/noupstream" branch -q --unset-upstream
+# Main tracks another branch on origin, which is ahead, so a move would pull that
+# branch into main.
+git clone -q "$WORK/ff-origins/elsewhere.git" "$WORK/ff-upstream-elsewhere"
+echo 'release upstream' >"$WORK/ff-upstream-elsewhere/file.txt"
+git -C "$WORK/ff-upstream-elsewhere" -c user.name=t -c user.email=t@t \
+	commit -qam 'upstream release'
+git -C "$WORK/ff-upstream-elsewhere" push -q origin HEAD:release
+git -C "$M/elsewhere" config branch.main.merge refs/heads/release
+# A tag and a local branch whose short names collide with main and origin/main
+# must not hide that the member is on its default branch.
+git -C "$M/tagged" tag main
+git -C "$M/tagged" update-ref refs/heads/origin/main HEAD
+echo 'local edit' >>"$M/dirty/file.txt"
+git -C "$M/picking" rev-parse HEAD >"$M/picking/.git/CHERRY_PICK_HEAD"
+echo 'local commit' >>"$M/diverged/file.txt"
+git -C "$M/diverged" -c user.name=t -c user.email=t@t commit -qam local
+
+ff_snapshot before
+if "$AW" ff --dry-run --concurrency 1 "$M" >"$WORK/ff-dry.log" 2>&1; then
+	pass "fast-forward --dry-run exits zero when nothing fails"
+else
+	fail "fast-forward --dry-run exits zero when nothing fails"
+fi
+ff_snapshot dry
+for name in $FF_PRESENT; do
+	assert "fast-forward --dry-run leaves $name HEAD unchanged" \
+		"$(ff_same "$name" head before dry)" same
+	assert "fast-forward --dry-run leaves $name porcelain unchanged" \
+		"$(ff_same "$name" status before dry)" same
+done
+assert "fast-forward --dry-run reports what would advance" \
+	"$(grep -Ec '^repo +advance +would advance [0-9a-f]+\.\.[0-9a-f]+ \(1 commit\(s\)\)$' \
+		"$WORK/ff-dry.log")" 1
+assert "fast-forward --dry-run creates a missing origin/HEAD" \
+	"$(git -C "$M/advance" symbolic-ref refs/remotes/origin/HEAD)" \
+	refs/remotes/origin/main
+assert "fast-forward --dry-run tallies what would advance" \
+	"$(grep -c '^verify    4 would advance, 1 up to date, 9 skipped, 0 failed$' \
+		"$WORK/ff-dry.log")" 1
+
+if "$AW" fast-forward --concurrency 1 "$M" >"$WORK/ff.log" 2>&1; then
+	fail "fast-forward exits non-zero when a move fails"
+else
+	pass "fast-forward exits non-zero when a move fails"
+fi
+ff_snapshot after
+for name in advance later tagged; do
+	assert "fast-forward moves $name to its upstream" \
+		"$(git -C "$M/$name" rev-parse HEAD)" \
+		"$(git -C "$WORK/ff-origins/$name.git" rev-parse main)"
+	assert "fast-forward reports $name advanced" \
+		"$(grep -Ec "^repo +$name +advanced [0-9a-f]+\.\.[0-9a-f]+ \(1 commit\(s\)\)$" \
+			"$WORK/ff.log")" 1
+done
+assert "fast-forward reports an up-to-date member" \
+	"$(grep -Ec '^repo +current +up to date$' "$WORK/ff.log")" 1
+assert "fast-forward reports the refused move with git's reason" \
+	"$(grep -Ec '^repo +blocked +FAILED — .*untracked working tree files would be overwritten' \
+		"$WORK/ff.log")" 1
+assert "fast-forward keeps the untracked file in the way" \
+	"$(cat "$M/blocked/new.txt")" 'local untracked'
+for pair in \
+	'detached:detached HEAD' \
+	'feature:on feature, not the default branch main' \
+	'nohead:default branch unknown: error: Cannot determine remote HEAD' \
+	'noupstream:no upstream branch' \
+	'elsewhere:tracks origin/release, not origin/main' \
+	'dirty:tracked changes' \
+	'picking:cherry-pick in progress' \
+	'diverged:ahead 1, behind 1' \
+	'absent:not present, skipped'; do
+	name="${pair%%:*}"
+	why="${pair#*:}"
+	case "$name" in absent) expected="$why" ;; *) expected="skipped — $why" ;; esac
+	assert "fast-forward skips $name: $why" \
+		"$(grep -c "^repo      $name *$expected\$" "$WORK/ff.log")" 1
+done
+for name in current detached feature nohead noupstream elsewhere dirty picking diverged blocked; do
+	assert "fast-forward leaves $name HEAD unchanged" \
+		"$(ff_same "$name" head before after)" same
+done
+assert "fast-forward tallies the run" \
+	"$(grep -c '^verify    3 advanced, 1 up to date, 9 skipped, 1 failed$' \
+		"$WORK/ff.log")" 1
+assert "fast-forward reports no workspace-layer row" \
+	"$(grep -c '^layer' "$WORK/ff.log" || true)" 0
+}
+
 # --- read-only invariant ------------------------------------------------------
 case_readonly_invariant() {
 prepare_demo_workspace
@@ -1674,6 +1824,7 @@ run_case status-fixtures case_status_fixtures
 run_case status case_status
 run_case status-drift case_status_drift
 run_case sync case_sync
+run_case fast-forward case_fast_forward
 run_case read-only-invariant case_readonly_invariant
 run_case status-skills case_status_skills
 

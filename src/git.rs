@@ -27,6 +27,24 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `aw sync` allows a member fetch to transfer data.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long `aw fast-forward` waits for origin to name its default branch: one
+/// round trip, the same exchange a `doctor` probe makes.
+const SET_HEAD_TIMEOUT: Duration = PROBE_TIMEOUT;
+
+/// How long `aw fast-forward` allows a move. The merge is local, so the bound
+/// exists for a hook that hangs, and so an interrupt reaches the child.
+const MERGE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// State files git leaves while an operation is part-way through, with the
+/// operation's name. `rebase-apply` also marks a `git am`.
+const IN_PROGRESS_MARKERS: [(&str, &str); 5] = [
+    ("MERGE_HEAD", "merge"),
+    ("rebase-merge", "rebase"),
+    ("rebase-apply", "rebase"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+];
+
 /// Result of refreshing a repository's origin remote.
 pub enum FetchOutcome {
     Fetched,
@@ -639,6 +657,148 @@ fn fetch_outcome(result: Option<BoundedOutput>, timeout: Duration) -> FetchOutco
     FetchOutcome::Failed(detail)
 }
 
+/// The branch `HEAD` is on, or `None` when it is detached.
+pub fn current_branch(dir: &Path) -> Result<Option<String>> {
+    symbolic_ref(dir, "HEAD", "refs/heads/")
+}
+
+/// The branch the local `refs/remotes/origin/HEAD` names, or `None` when that
+/// ref is unset.
+pub fn origin_default_branch(dir: &Path) -> Result<Option<String>> {
+    symbolic_ref(dir, "refs/remotes/origin/HEAD", "refs/remotes/origin/")
+}
+
+/// The full ref a local branch tracks, such as `refs/remotes/origin/main`, or
+/// `None` when it tracks nothing.
+pub fn upstream_ref(dir: &Path, branch: &str) -> Result<Option<String>> {
+    let head = format!("refs/heads/{branch}");
+    let upstream = run(
+        dir,
+        &["for-each-ref", "--format=%(upstream)", "--count=1", &head],
+    )?;
+    let upstream = upstream.trim();
+    Ok((!upstream.is_empty()).then(|| upstream.to_owned()))
+}
+
+/// Resolve a symbolic ref and strip `prefix` from its target, or `None` when
+/// it is unset, not symbolic (which `--quiet` reports as exit 1), or points
+/// outside `prefix`. The full name is read rather than `--short`, which
+/// abbreviates ambiguously when a tag or branch shares the name.
+fn symbolic_ref(dir: &Path, name: &str, prefix: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["symbolic-ref", "--quiet", name])
+        .output()
+        .with_context(|| format!("reading {name} in {}", dir.display()))?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        output.status.success(),
+        "reading {name} failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .strip_prefix(prefix)
+        .map(str::to_owned))
+}
+
+/// Create `refs/remotes/origin/HEAD` from the branch origin reports as its
+/// default. This asks the remote, so it runs bounded and without prompting. The
+/// inner error carries git's reason.
+pub fn set_origin_head(dir: &Path) -> Result<std::result::Result<(), String>> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "set-head", "origin", "--auto"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true");
+    let result = run_bounded(&mut command, SET_HEAD_TIMEOUT)
+        .with_context(|| format!("waiting for git remote set-head in {}", dir.display()))?;
+    Ok(command_outcome(
+        result,
+        "git remote set-head",
+        SET_HEAD_TIMEOUT,
+    ))
+}
+
+/// Whether tracked files differ from `HEAD`. Untracked files do not count: a
+/// fast-forward that would overwrite one refuses on its own.
+pub fn has_tracked_changes(dir: &Path) -> Result<bool> {
+    run(dir, &["status", "--porcelain", "--untracked-files=no"]).map(|output| !output.is_empty())
+}
+
+/// The operation the checkout is part-way through, if any.
+pub fn operation_in_progress(dir: &Path) -> Result<Option<&'static str>> {
+    let mut args = vec!["rev-parse", "--path-format=absolute"];
+    for (marker, _) in IN_PROGRESS_MARKERS {
+        args.extend(["--git-path", marker]);
+    }
+    let paths = run(dir, &args)?;
+    for ((_, operation), path) in IN_PROGRESS_MARKERS.iter().zip(paths.lines()) {
+        if Path::new(path).exists() {
+            return Ok(Some(operation));
+        }
+    }
+    Ok(None)
+}
+
+/// The abbreviated commit id a revision resolves to.
+pub fn short_commit(dir: &Path, revision: &str) -> Result<String> {
+    run(dir, &["rev-parse", "--short", "--end-of-options", revision])
+        .map(|sha| sha.trim().to_owned())
+}
+
+/// Fast-forward the checked-out branch to its upstream. Git refuses anything
+/// that is not a fast-forward, and anything that would overwrite an untracked
+/// file; the inner error carries its reason either way, because the exit code
+/// cannot tell a refusal from a real failure.
+pub fn merge_ff_only(dir: &Path) -> Result<std::result::Result<(), String>> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["merge", "--ff-only", "--quiet", "@{u}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true");
+    let result = run_bounded(&mut command, MERGE_TIMEOUT)
+        .with_context(|| format!("waiting for git merge in {}", dir.display()))?;
+    Ok(command_outcome(result, "git merge", MERGE_TIMEOUT))
+}
+
+/// Map a bounded command's result to success or git's first line of complaint.
+fn command_outcome(
+    result: Option<BoundedOutput>,
+    what: &str,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
+    let Some(output) = result else {
+        return Err(format!(
+            "{what} did not complete within {}s",
+            timeout.as_secs()
+        ));
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(output
+        .stderr
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(
+            || format!("{what} exited with {}", output.status),
+            |line| line.trim().to_owned(),
+        ))
+}
+
 /// Whether a remote is reachable. When `branch` is set, probes that branch's
 /// ref (`refs/heads/<branch>`), so a member pinned to a non-default branch is
 /// checked against the ref it actually uses rather than the remote's `HEAD`;
@@ -935,6 +1095,32 @@ mod tests {
             panic!("a non-zero exit should map to Failed");
         };
         assert_eq!(message, "fatal: could not read from remote");
+    }
+
+    /// Each marker names its own operation: the paths come back from one
+    /// `rev-parse` call and are paired with the markers by position.
+    #[test]
+    fn each_in_progress_marker_names_its_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path()).unwrap();
+        assert_eq!(operation_in_progress(dir.path()).unwrap(), None);
+        let git_dir = dir.path().join(".git");
+        for (marker, operation) in [
+            ("MERGE_HEAD", "merge"),
+            ("rebase-merge", "rebase"),
+            ("rebase-apply", "rebase"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+        ] {
+            let path = git_dir.join(marker);
+            std::fs::write(&path, "").unwrap();
+            assert_eq!(
+                operation_in_progress(dir.path()).unwrap(),
+                Some(operation),
+                "{marker}"
+            );
+            std::fs::remove_file(&path).unwrap();
+        }
     }
 
     #[test]
