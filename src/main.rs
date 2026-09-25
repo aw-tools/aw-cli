@@ -7,6 +7,7 @@
 mod adopt;
 mod agents;
 mod delivery;
+mod fetch;
 mod garden;
 mod git;
 mod manifest;
