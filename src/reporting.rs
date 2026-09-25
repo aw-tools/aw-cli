@@ -31,7 +31,7 @@ pub fn init_name(name: &str) -> String {
 }
 
 pub fn init_next_step() -> String {
-    "Next: edit workspace.toml, then run bin/bootstrap.".to_owned()
+    "Next: edit workspace.toml, then run aw bootstrap.".to_owned()
 }
 
 pub fn init_no_commit() -> String {

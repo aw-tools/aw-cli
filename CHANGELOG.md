@@ -10,6 +10,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Each release updates the Homebrew tap, so `brew upgrade` finds it (#40)
 
+### Fixed
+
+- `aw init` ends by pointing at `aw bootstrap`, which works for any template,
+  instead of a script only some templates ship (#42)
+
 ## [0.1.0] - 2026-09-19
 
 ### Added
