@@ -9,6 +9,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Each release updates the Homebrew tap, so `brew upgrade` finds it (#40)
+- `aw fast-forward` fetches, then brings each clean repository on its default
+  branch up to its upstream; `--dry-run` shows what would move (#44)
 
 ### Fixed
 

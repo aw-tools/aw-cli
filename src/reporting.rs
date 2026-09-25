@@ -234,6 +234,69 @@ pub fn sync_verify(
     )
 }
 
+pub fn fast_forward_workspace(name: &str) -> String {
+    format!("workspace {name}")
+}
+
+pub fn fast_forward_advanced(path: &str, old: &str, new: &str, commits: u64) -> String {
+    format!("repo      {path:<24} advanced {old}..{new} ({commits} commit(s))")
+}
+
+pub fn fast_forward_would_advance(path: &str, old: &str, new: &str, commits: u64) -> String {
+    format!("repo      {path:<24} would advance {old}..{new} ({commits} commit(s))")
+}
+
+pub fn fast_forward_up_to_date(path: &str) -> String {
+    format!("repo      {path:<24} up to date")
+}
+
+pub fn fast_forward_absent(path: &str) -> String {
+    format!("repo      {path:<24} not present, skipped")
+}
+
+pub fn fast_forward_failed(path: &str, why: &str) -> String {
+    format!("repo      {path:<24} FAILED — {why}")
+}
+
+/// Why a present member was left where it is.
+pub enum FastForwardSkip {
+    Detached,
+    NotDefault { branch: String, default: String },
+    NoDefault(String),
+    NoUpstream,
+    TrackedChanges,
+    InProgress(&'static str),
+    Ahead { ahead: u64, behind: u64 },
+}
+
+pub fn fast_forward_skipped(path: &str, reason: &FastForwardSkip) -> String {
+    let why = match reason {
+        FastForwardSkip::Detached => "detached HEAD".to_owned(),
+        FastForwardSkip::NotDefault { branch, default } => {
+            format!("on {branch}, not the default branch {default}")
+        }
+        FastForwardSkip::NoDefault(why) => format!("default branch unknown: {why}"),
+        FastForwardSkip::NoUpstream => "no upstream branch".to_owned(),
+        FastForwardSkip::TrackedChanges => "tracked changes".to_owned(),
+        FastForwardSkip::InProgress(operation) => format!("{operation} in progress"),
+        FastForwardSkip::Ahead { ahead, behind } => format!("ahead {ahead}, behind {behind}"),
+    };
+    format!("repo      {path:<24} skipped — {why}")
+}
+
+pub fn fast_forward_verify(
+    advanced: usize,
+    up_to_date: usize,
+    skipped: usize,
+    failed: usize,
+    dry_run: bool,
+) -> String {
+    let moved = if dry_run { "would advance" } else { "advanced" };
+    format!(
+        "verify    {advanced} {moved}, {up_to_date} up to date, {skipped} skipped, {failed} failed"
+    )
+}
+
 pub struct DoctorCheck {
     label: &'static str,
     detail: String,

@@ -7,6 +7,7 @@
 mod adopt;
 mod agents;
 mod delivery;
+mod fast_forward;
 mod fetch;
 mod garden;
 mod git;
@@ -80,6 +81,27 @@ enum Verb {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
+    /// Fetch the managed repositories, then fast-forward each one that is safe
+    /// to move.
+    ///
+    /// A repository moves only when it is on the default branch origin names,
+    /// tracks an upstream, has no tracked changes, has no merge, rebase,
+    /// cherry-pick or revert in progress, and is behind its upstream without
+    /// being ahead. Every other repository is reported and left as it is, and
+    /// the workspace layer is never touched. Exits non-zero when any fetch or
+    /// fast-forward fails.
+    #[command(visible_alias = "ff")]
+    FastForward {
+        /// Report what would move, and move nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Repositories to fetch at once. 0 or 1 fetches sequentially.
+        /// Overrides `sync.concurrency` in the manifest.
+        #[arg(long)]
+        concurrency: Option<usize>,
+        /// Workspace root. Defaults to the nearest ancestor with a manifest.
+        dir: Option<PathBuf>,
+    },
     /// Add an existing checkout to the workspace manifest.
     Adopt {
         /// Existing checkout to add.
@@ -119,6 +141,11 @@ fn run() -> Result<bool> {
             exit_code,
         } => status(&manifest::resolve_root(dir)?, json, exit_code),
         Verb::Sync { concurrency, dir } => sync::run(&manifest::resolve_root(dir)?, concurrency),
+        Verb::FastForward {
+            dry_run,
+            concurrency,
+            dir,
+        } => fast_forward::run(&manifest::resolve_root(dir)?, concurrency, dry_run),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
     }
 }

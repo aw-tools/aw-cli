@@ -5,8 +5,9 @@
 `aw` is a **local single-user CLI tool**. It runs under the invoking user's
 permissions, has no network listener, no daemon and no authentication. Its only
 network activity is the `git` it spawns: cloning a template on `aw init`,
-cloning and fetching managed repositories on `aw bootstrap` and `aw sync`, and
-probing remotes on `aw doctor`.
+cloning and fetching managed repositories on `aw bootstrap`, `aw sync` and
+`aw fast-forward`, asking origin for its default branch on `aw fast-forward`,
+and probing remotes on `aw doctor`.
 
 The primary threats are:
 
@@ -39,9 +40,11 @@ The primary threats are:
 - **No embedded credentials.** A template URL carrying a user, password, query
   string or fragment is refused with a message pointing at a git credential
   helper.
-- **Working trees are never written.** `aw` clones, fetches, sets git
-  configuration and creates symlinks for skills. It never checks out, merges,
-  rebases or edits a file inside a managed repository.
+- **Working trees are written by one command only.** `aw` clones, fetches, sets
+  git configuration and creates symlinks for skills. The exception is
+  `aw fast-forward`, which runs only when asked and moves a clean checkout on
+  its default branch with `git merge --ff-only`. No command checks out, rebases
+  or edits a file inside a managed repository.
 - **Code safety.** `unsafe_code = "deny"` globally; clippy pedantic at warn;
   dependencies audited by `cargo-deny` in CI (advisories, licences, bans); every
   third-party GitHub action pinned to a commit hash.
