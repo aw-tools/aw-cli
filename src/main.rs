@@ -85,7 +85,7 @@ enum Verb {
     /// to move.
     ///
     /// A repository moves only when it is on the default branch origin names,
-    /// tracks an upstream, has no tracked changes, has no merge, rebase,
+    /// tracks that branch on origin, has no tracked changes, has no merge, rebase,
     /// cherry-pick or revert in progress, and is behind its upstream without
     /// being ahead. Every other repository is reported and left as it is, and
     /// the workspace layer is never touched. Exits non-zero when any fetch or

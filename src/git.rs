@@ -659,23 +659,36 @@ fn fetch_outcome(result: Option<BoundedOutput>, timeout: Duration) -> FetchOutco
 
 /// The branch `HEAD` is on, or `None` when it is detached.
 pub fn current_branch(dir: &Path) -> Result<Option<String>> {
-    symbolic_ref(dir, "HEAD")
+    symbolic_ref(dir, "HEAD", "refs/heads/")
 }
 
 /// The branch the local `refs/remotes/origin/HEAD` names, or `None` when that
 /// ref is unset.
 pub fn origin_default_branch(dir: &Path) -> Result<Option<String>> {
-    Ok(symbolic_ref(dir, "refs/remotes/origin/HEAD")?
-        .map(|name| name.strip_prefix("origin/").unwrap_or(&name).to_owned()))
+    symbolic_ref(dir, "refs/remotes/origin/HEAD", "refs/remotes/origin/")
 }
 
-/// Resolve a symbolic ref to its short name, or `None` when it is unset or not
-/// symbolic, which `--quiet` reports as exit 1.
-fn symbolic_ref(dir: &Path, name: &str) -> Result<Option<String>> {
+/// The full ref a local branch tracks, such as `refs/remotes/origin/main`, or
+/// `None` when it tracks nothing.
+pub fn upstream_ref(dir: &Path, branch: &str) -> Result<Option<String>> {
+    let head = format!("refs/heads/{branch}");
+    let upstream = run(
+        dir,
+        &["for-each-ref", "--format=%(upstream)", "--count=1", &head],
+    )?;
+    let upstream = upstream.trim();
+    Ok((!upstream.is_empty()).then(|| upstream.to_owned()))
+}
+
+/// Resolve a symbolic ref and strip `prefix` from its target, or `None` when
+/// it is unset, not symbolic (which `--quiet` reports as exit 1), or points
+/// outside `prefix`. The full name is read rather than `--short`, which
+/// abbreviates ambiguously when a tag or branch shares the name.
+fn symbolic_ref(dir: &Path, name: &str, prefix: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["symbolic-ref", "--quiet", "--short", name])
+        .args(["symbolic-ref", "--quiet", name])
         .output()
         .with_context(|| format!("reading {name} in {}", dir.display()))?;
     if output.status.code() == Some(1) {
@@ -687,9 +700,10 @@ fn symbolic_ref(dir: &Path, name: &str) -> Result<Option<String>> {
         dir.display(),
         String::from_utf8_lossy(&output.stderr).trim()
     );
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-    ))
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .strip_prefix(prefix)
+        .map(str::to_owned))
 }
 
 /// Create `refs/remotes/origin/HEAD` from the branch origin reports as its

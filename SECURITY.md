@@ -43,8 +43,8 @@ The primary threats are:
 - **Working trees are written by one command only.** `aw` clones, fetches, sets
   git configuration and creates symlinks for skills. The exception is
   `aw fast-forward`, which runs only when asked and moves a clean checkout on
-  its default branch with `git merge --ff-only`. No command checks out, rebases
-  or edits a file inside a managed repository.
+  its default branch with `git merge --ff-only`. Apart from that move, no
+  command checks out, rebases or edits a file inside a managed repository.
 - **Code safety.** `unsafe_code = "deny"` globally; clippy pedantic at warn;
   dependencies audited by `cargo-deny` in CI (advisories, licences, bans); every
   third-party GitHub action pinned to a commit hash.

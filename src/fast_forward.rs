@@ -158,6 +158,20 @@ fn advance(path: &Path, dry_run: bool) -> Result<Outcome> {
             default,
         }));
     }
+    // The move is `merge --ff-only @{u}`, so the upstream must be the default
+    // branch on origin: tracking anything else would pull another branch in.
+    let Some(upstream) = git::upstream_ref(path, &branch)? else {
+        return Ok(Outcome::Skipped(FastForwardSkip::NoUpstream));
+    };
+    if upstream != format!("refs/remotes/origin/{default}") {
+        return Ok(Outcome::Skipped(FastForwardSkip::OtherUpstream {
+            upstream: upstream
+                .strip_prefix("refs/remotes/")
+                .unwrap_or(&upstream)
+                .to_owned(),
+            default,
+        }));
+    }
     let Some(comparison) = git::upstream_comparison(path)? else {
         return Ok(Outcome::Skipped(FastForwardSkip::NoUpstream));
     };

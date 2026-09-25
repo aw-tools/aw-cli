@@ -264,6 +264,7 @@ pub enum FastForwardSkip {
     NotDefault { branch: String, default: String },
     NoDefault(String),
     NoUpstream,
+    OtherUpstream { upstream: String, default: String },
     TrackedChanges,
     InProgress(&'static str),
     Ahead { ahead: u64, behind: u64 },
@@ -277,6 +278,9 @@ pub fn fast_forward_skipped(path: &str, reason: &FastForwardSkip) -> String {
         }
         FastForwardSkip::NoDefault(why) => format!("default branch unknown: {why}"),
         FastForwardSkip::NoUpstream => "no upstream branch".to_owned(),
+        FastForwardSkip::OtherUpstream { upstream, default } => {
+            format!("tracks {upstream}, not origin/{default}")
+        }
         FastForwardSkip::TrackedChanges => "tracked changes".to_owned(),
         FastForwardSkip::InProgress(operation) => format!("{operation} in progress"),
         FastForwardSkip::Ahead { ahead, behind } => format!("ahead {ahead}, behind {behind}"),

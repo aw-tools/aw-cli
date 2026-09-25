@@ -1509,7 +1509,7 @@ mv "$WORK/demo.workspace/workspace.toml.bak" \
 # --- fast-forward -------------------------------------------------------------
 # One member per outcome, each with its own origin so each can sit where the
 # case needs it. Members listed in the order the report is read back.
-FF_PRESENT="advance current detached feature nohead noupstream dirty picking diverged blocked later"
+FF_PRESENT="advance current detached feature nohead noupstream elsewhere dirty picking diverged blocked later tagged"
 
 ff_member() { # name
 	git clone -q --bare "$WORK/ff-seed" "$WORK/ff-origins/$1.git"
@@ -1551,7 +1551,7 @@ done
 for name in $FF_PRESENT; do
 	ff_member "$name"
 done
-for name in advance dirty picking diverged later; do
+for name in advance dirty picking diverged later tagged; do
 	ff_advance_origin "$name" file.txt
 done
 # The upstream adds a file the checkout already holds untracked, so git refuses
@@ -1568,6 +1568,18 @@ git -C "$M/feature" switch -qc feature
 git -C "$WORK/ff-origins/nohead.git" symbolic-ref HEAD refs/heads/gone
 git -C "$M/nohead" remote set-head origin -d
 git -C "$M/noupstream" branch -q --unset-upstream
+# Main tracks another branch on origin, which is ahead, so a move would pull that
+# branch into main.
+git clone -q "$WORK/ff-origins/elsewhere.git" "$WORK/ff-upstream-elsewhere"
+echo 'release upstream' >"$WORK/ff-upstream-elsewhere/file.txt"
+git -C "$WORK/ff-upstream-elsewhere" -c user.name=t -c user.email=t@t \
+	commit -qam 'upstream release'
+git -C "$WORK/ff-upstream-elsewhere" push -q origin HEAD:release
+git -C "$M/elsewhere" config branch.main.merge refs/heads/release
+# A tag and a local branch whose short names collide with main and origin/main
+# must not hide that the member is on its default branch.
+git -C "$M/tagged" tag main
+git -C "$M/tagged" update-ref refs/heads/origin/main HEAD
 echo 'local edit' >>"$M/dirty/file.txt"
 git -C "$M/picking" rev-parse HEAD >"$M/picking/.git/CHERRY_PICK_HEAD"
 echo 'local commit' >>"$M/diverged/file.txt"
@@ -1593,7 +1605,7 @@ assert "fast-forward --dry-run creates a missing origin/HEAD" \
 	"$(git -C "$M/advance" symbolic-ref refs/remotes/origin/HEAD)" \
 	refs/remotes/origin/main
 assert "fast-forward --dry-run tallies what would advance" \
-	"$(grep -c '^verify    3 would advance, 1 up to date, 8 skipped, 0 failed$' \
+	"$(grep -c '^verify    4 would advance, 1 up to date, 9 skipped, 0 failed$' \
 		"$WORK/ff-dry.log")" 1
 
 if "$AW" fast-forward --concurrency 1 "$M" >"$WORK/ff.log" 2>&1; then
@@ -1602,7 +1614,7 @@ else
 	pass "fast-forward exits non-zero when a move fails"
 fi
 ff_snapshot after
-for name in advance later; do
+for name in advance later tagged; do
 	assert "fast-forward moves $name to its upstream" \
 		"$(git -C "$M/$name" rev-parse HEAD)" \
 		"$(git -C "$WORK/ff-origins/$name.git" rev-parse main)"
@@ -1622,6 +1634,7 @@ for pair in \
 	'feature:on feature, not the default branch main' \
 	'nohead:default branch unknown: error: Cannot determine remote HEAD' \
 	'noupstream:no upstream branch' \
+	'elsewhere:tracks origin/release, not origin/main' \
 	'dirty:tracked changes' \
 	'picking:cherry-pick in progress' \
 	'diverged:ahead 1, behind 1' \
@@ -1632,12 +1645,12 @@ for pair in \
 	assert "fast-forward skips $name: $why" \
 		"$(grep -c "^repo      $name *$expected\$" "$WORK/ff.log")" 1
 done
-for name in current detached feature nohead noupstream dirty picking diverged blocked; do
+for name in current detached feature nohead noupstream elsewhere dirty picking diverged blocked; do
 	assert "fast-forward leaves $name HEAD unchanged" \
 		"$(ff_same "$name" head before after)" same
 done
 assert "fast-forward tallies the run" \
-	"$(grep -c '^verify    2 advanced, 1 up to date, 8 skipped, 1 failed$' \
+	"$(grep -c '^verify    3 advanced, 1 up to date, 9 skipped, 1 failed$' \
 		"$WORK/ff.log")" 1
 assert "fast-forward reports no workspace-layer row" \
 	"$(grep -c '^layer' "$WORK/ff.log" || true)" 0
