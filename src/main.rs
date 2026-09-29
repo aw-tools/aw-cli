@@ -169,9 +169,54 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
     }
 
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let created_dirs = create_target(&dir)?;
+    let result = init_into(&dir, name, template);
+    if result.is_err() {
+        remove_created(&created_dirs);
+    }
+    result
+}
+
+/// Create `dir` and any missing parents, one level at a time, returning each
+/// directory this call created, outermost first. Recording what `mkdir`
+/// actually made, rather than what looked missing beforehand, keeps a `..`
+/// component from ever naming a directory that already existed.
+fn create_target(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut levels: Vec<&Path> = dir
+        .ancestors()
+        .filter(|level| !level.as_os_str().is_empty())
+        .collect();
+    levels.reverse();
+    let mut created = Vec::new();
+    for level in levels {
+        match std::fs::create_dir(level) {
+            Ok(()) => created.push(level.to_path_buf()),
+            Err(_) if level.is_dir() => {}
+            Err(err) => {
+                remove_created(&created);
+                return Err(err).with_context(|| format!("creating {}", level.display()));
+            }
+        }
+    }
+    Ok(created)
+}
+
+/// Remove the directories a failed `aw init` created, innermost first, so a
+/// path through a created parent still resolves when its turn comes. A failed
+/// removal is reported and never replaces the error that caused the cleanup.
+fn remove_created(created: &[PathBuf]) {
+    for path in created.iter().rev() {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("aw: could not remove {}: {err}", path.display()),
+        }
+    }
+}
+
+fn init_into(dir: &Path, name: Option<String>, template: Option<&str>) -> Result<()> {
     let root =
-        std::fs::canonicalize(&dir).with_context(|| format!("resolving {}", dir.display()))?;
+        std::fs::canonicalize(dir).with_context(|| format!("resolving {}", dir.display()))?;
 
     let mut source = template::Source::parse(template)?;
     source.pinned_by(manifest::recorded_template(&root)?.as_ref());
@@ -553,6 +598,68 @@ mod tests {
         assert!(
             !target.exists(),
             "an invalid explicit name must not create the target directory"
+        );
+    }
+
+    /// A template source that cannot be cloned, local so no test needs the
+    /// network.
+    fn missing_template(temp: &tempfile::TempDir) -> String {
+        temp.path().join("no-such-template").display().to_string()
+    }
+
+    #[test]
+    fn failed_init_removes_the_directory_it_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("workspace");
+        let template = missing_template(&temp);
+        assert!(init(Some(target.clone()), None, Some(&template)).is_err());
+        assert!(
+            !target.exists(),
+            "a failed init must remove the directory it created"
+        );
+    }
+
+    #[test]
+    fn failed_init_removes_every_parent_it_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("a/b/c");
+        let template = missing_template(&temp);
+        assert!(init(Some(target), None, Some(&template)).is_err());
+        assert!(
+            !temp.path().join("a").exists(),
+            "a failed init must remove every parent it created"
+        );
+        assert!(temp.path().is_dir(), "the existing ancestor must stay");
+    }
+
+    #[test]
+    fn failed_init_keeps_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("workspace");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "mine\n").unwrap();
+        let template = missing_template(&temp);
+        assert!(init(Some(target.clone()), None, Some(&template)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).unwrap(),
+            "mine\n",
+            "a failed init must leave an existing directory untouched"
+        );
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_init_through_dot_dot_removes_only_what_it_created() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("sentinel"), "").unwrap();
+        let target = temp.path().join("new/../other");
+        let template = missing_template(&temp);
+        assert!(init(Some(target), None, Some(&template)).is_err());
+        assert!(!temp.path().join("new").exists());
+        assert!(!temp.path().join("other").exists());
+        assert!(
+            temp.path().join("sentinel").exists(),
+            "cleanup must never reach the directory a `..` resolves to"
         );
     }
 
