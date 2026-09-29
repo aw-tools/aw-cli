@@ -197,7 +197,7 @@ FIXTURES="$WORK"
 init_demo_workspace() {
 	mkdir -p "$WORK/demo.workspace"
 	echo 'keep this readme' >"$WORK/demo.workspace/README.md"
-	"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
+	"$AW" init --trust-template --template "$WORK/origins/template.git@fixture-v1" \
 		"$WORK/demo.workspace" --name demo >"$WORK/init.log" 2>&1
 }
 
@@ -237,7 +237,7 @@ EOF
 }
 
 setup_status_fixtures() {
-	"$AW" init --template "$WORK/seed-template" \
+	"$AW" init --trust-template --template "$WORK/seed-template" \
 		"$WORK/status.workspace" --name status >"$WORK/status-init.log" 2>&1
 	git -C "$WORK/status.workspace" config --local core.hooksPath .githooks
 	cat >>"$WORK/status.workspace/workspace.toml" <<EOF
@@ -332,12 +332,12 @@ assert "init preserves executable modes" \
 	"$([ -x "$WORK/demo.workspace/bin/bootstrap" ] && echo yes)" yes
 
 cp -a "$WORK/demo.workspace" "$WORK/demo-before-reinit"
-"$AW" init --template "$WORK/origins/template.git@fixture-v1" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@fixture-v1" \
 	"$WORK/demo.workspace" --name demo >"$WORK/reinit.log" 2>&1
 assert "same-source re-init leaves the target byte-for-byte unchanged" \
 	"$(diff -qr "$WORK/demo-before-reinit" "$WORK/demo.workspace")" ""
 
-if "$AW" init --template "$WORK/origins/conflicting-template.git@main" \
+if "$AW" init --trust-template --template "$WORK/origins/conflicting-template.git@main" \
 	"$WORK/demo.workspace" --name demo >"$WORK/conflicting-init.log" 2>&1; then
 	fail "conflicting-source re-init fails"
 else
@@ -351,7 +351,7 @@ assert "conflicting-source re-init leaves the target byte-for-byte unchanged" \
 mkdir -p "$WORK/invalid.workspace"
 echo 'keep this marker' >"$WORK/invalid.workspace/marker.txt"
 cp -a "$WORK/invalid.workspace" "$WORK/invalid-before-init"
-if "$AW" init --template "$WORK/origins/invalid-template.git@main" \
+if "$AW" init --trust-template --template "$WORK/origins/invalid-template.git@main" \
 	"$WORK/invalid.workspace" --name invalid >"$WORK/invalid-init.log" 2>&1; then
 	fail "invalid-manifest init fails"
 else
@@ -360,7 +360,7 @@ fi
 assert "invalid-manifest init leaves the target byte-for-byte unchanged" \
 	"$(diff -qr "$WORK/invalid-before-init" "$WORK/invalid.workspace")" ""
 
-if "$AW" init --template "$WORK/origins/template.git@v9.9.9" \
+if "$AW" init --trust-template --template "$WORK/origins/template.git@v9.9.9" \
 	"$WORK/new-missing-ref.workspace" >"$WORK/new-missing-ref-init.log" 2>&1; then
 	fail "missing-ref init into a new directory fails"
 else
@@ -371,7 +371,7 @@ assert "missing-ref init removes the directory it created" \
 assert "missing-ref init hints at naming an existing ref" \
 	"$(grep -c 'name a tag or branch the template has' "$WORK/new-missing-ref-init.log")" 1
 
-if "$AW" init --template "$WORK/origins/no-such-template.git" \
+if "$AW" init --trust-template --template "$WORK/origins/no-such-template.git" \
 	"$WORK/unknown.workspace" >"$WORK/unknown-init.log" 2>&1; then
 	fail "unknown-template init fails"
 else
@@ -382,7 +382,7 @@ assert "unknown-template init removes the directory it created" \
 assert "unknown-template init hints at the address and access" \
 	"$(grep -c 'check the address and your access' "$WORK/unknown-init.log")" 1
 
-if "$AW" init --template "$WORK/origins/invalid-template.git@main" \
+if "$AW" init --trust-template --template "$WORK/origins/invalid-template.git@main" \
 	"$WORK/nested/deeper/invalid.workspace" --name invalid >"$WORK/nested-init.log" 2>&1; then
 	fail "nested invalid-manifest init fails"
 else
@@ -391,7 +391,7 @@ fi
 assert "nested failed init removes every parent it created" \
 	"$([ -e "$WORK/nested" ] && echo present || echo absent)" absent
 
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
 assert "init accepts a local working-tree template" \
 	"$([ -f "$WORK/working-tree.workspace/workspace.toml" ] && echo yes)" yes
@@ -400,28 +400,28 @@ assert "working-tree init is detached" \
 assert "working-tree init records an empty typed ref" \
 	"$(grep -c '^ref = ""$' "$WORK/working-tree.workspace/workspace.toml")" 1
 
-"$AW" init --template "$WORK/origins/template.git@main" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@main" \
 	"$WORK/branch.workspace" --name branch >"$WORK/init-branch.log" 2>&1
 assert "init resolves a branch ref" \
 	"$(grep -c '^ref = "main"$' "$WORK/branch.workspace/workspace.toml")" 1
 assert "branch ref records its resolved SHA" \
 	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/branch.workspace/workspace.toml")" 1
 
-"$AW" init --template "$WORK/origins/template.git@$TEMPLATE_SHA" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@$TEMPLATE_SHA" \
 	"$WORK/sha.workspace" --name sha >"$WORK/init-sha.log" 2>&1
 assert "init resolves a SHA ref" \
 	"$(grep -c "^ref = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
 assert "SHA ref records its resolved SHA" \
 	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" "$WORK/sha.workspace/workspace.toml")" 1
 
-if "$AW" init --template "$WORK/origins/template.git@release" \
+if "$AW" init --trust-template --template "$WORK/origins/template.git@release" \
 	"$WORK/ambiguous.workspace" --name ambiguous >"$WORK/init-ambiguous.log" 2>&1; then
 	fail "ambiguous tag and branch ref is rejected"
 else
 	pass "ambiguous tag and branch ref is rejected"
 fi
 
-"$AW" init --template "$WORK/origins/template.git@refs/tags/release" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@refs/tags/release" \
 	"$WORK/qualified-tag.workspace" --name qualified-tag \
 	>"$WORK/init-qualified-tag.log" 2>&1
 assert "qualified tag ref selects the tag commit" \
@@ -430,7 +430,7 @@ assert "qualified tag records its resolved SHA" \
 	"$(grep -c "^sha = \"$TEMPLATE_SHA\"$" \
 		"$WORK/qualified-tag.workspace/workspace.toml")" 1
 
-"$AW" init --template "$WORK/origins/template.git@refs/heads/release" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@refs/heads/release" \
 	"$WORK/qualified-branch.workspace" --name qualified \
 	>"$WORK/init-qualified-branch.log" 2>&1
 assert "qualified branch ref fetches the requested commit" \
@@ -442,7 +442,7 @@ assert "qualified branch records its resolved SHA" \
 mkdir -p "$WORK/missing-ref.workspace"
 echo 'keep this marker' >"$WORK/missing-ref.workspace/marker.txt"
 cp -a "$WORK/missing-ref.workspace" "$WORK/missing-ref-before-init"
-if "$AW" init --template "$WORK/origins/template.git@does-not-exist" \
+if "$AW" init --trust-template --template "$WORK/origins/template.git@does-not-exist" \
 	"$WORK/missing-ref.workspace" --name missing \
 	>"$WORK/init-missing-ref.log" 2>&1; then
 	fail "missing ref is rejected"
@@ -537,7 +537,7 @@ assert "second bootstrap moves no HEAD" \
 
 # --- containment: a workspace manages nothing outside itself -----------------
 case_containment() {
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/escape.workspace" --name escape >/dev/null 2>&1
 cat >>"$WORK/escape.workspace/workspace.toml" <<EOF
 
@@ -559,7 +559,7 @@ assert "nothing was cloned outside the workspace" \
 
 # --- adopt -------------------------------------------------------------------
 case_adopt() {
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/adopt.workspace" --name adopt >/dev/null 2>&1
 cat >>"$WORK/adopt.workspace/workspace.toml" <<EOF
 
@@ -745,7 +745,7 @@ fi
 assert "missing-origin rejection names the cause" \
 	"$(grep -c 'no origin remote' "$WORK/adopt-no-origin.log")" 1
 
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/adopt-symlink.workspace" --name adopt-symlink >/dev/null 2>&1
 git clone -q "$WORK/origins/alpha.git" \
 	"$WORK/adopt-symlink.workspace/member"
@@ -775,9 +775,9 @@ assert "symlink rejection leaves the external manifest unchanged" \
 case_doctor() {
 prepare_demo_workspace
 "$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot1.log" 2>&1
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
-"$AW" init --template "$WORK/origins/template.git@main" \
+"$AW" init --trust-template --template "$WORK/origins/template.git@main" \
 	"$WORK/branch.workspace" --name branch >"$WORK/init-branch.log" 2>&1
 
 "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor.log" 2>&1 ||
@@ -864,7 +864,7 @@ git -C "$WORK/seed-develop" add file.txt
 git -C "$WORK/seed-develop" -c user.name=t -c user.email=t@t commit -qm develop
 git -C "$WORK/seed-develop" push -q "$WORK/develop.git" HEAD:develop
 
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/pinned.workspace" --name pinned >"$WORK/init-pinned.log" 2>&1
 cat >>"$WORK/pinned.workspace/workspace.toml" <<EOF
 
@@ -894,7 +894,7 @@ fi
 assert "doctor reports dangling remote HEAD for an unpinned member" \
 	"$(grep -c '^FAIL  remote.*member' "$WORK/doctor-unpinned.log")" 1
 
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/missing.workspace" --name missing >"$WORK/init-missing.log" 2>&1
 cat >>"$WORK/missing.workspace/workspace.toml" <<EOF
 
@@ -1083,7 +1083,7 @@ assert "status reports the repository inspection failure" \
 
 # --- status drift ------------------------------------------------------------
 case_status_drift() {
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/status-drift.workspace" --name status-drift >/dev/null 2>&1
 cat >>"$WORK/status-drift.workspace/workspace.toml" <<EOF
 
@@ -1568,7 +1568,7 @@ ff_same() { # name, file stem, suffix a, suffix b
 }
 
 case_fast_forward() {
-"$AW" init --template "$WORK/seed-template" \
+"$AW" init --trust-template --template "$WORK/seed-template" \
 	"$WORK/ff.workspace" --name ff >"$WORK/ff-init.log" 2>&1
 git init -q --initial-branch=main "$WORK/ff-seed"
 echo base >"$WORK/ff-seed/file.txt"

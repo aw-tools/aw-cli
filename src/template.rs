@@ -114,6 +114,13 @@ pub struct Prepared {
     pub sha: String,
 }
 
+impl Prepared {
+    /// The prepared checkout, holding exactly what `materialise` copies.
+    pub fn root(&self) -> &Path {
+        self.temporary.path()
+    }
+}
+
 /// Clone a template into an isolated temporary directory, resolve its requested
 /// commit, scrub template-repository-only files, and validate its contract.
 pub fn prepare(source: &Source) -> Result<Prepared> {

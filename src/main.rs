@@ -6,6 +6,7 @@
 
 mod adopt;
 mod agents;
+mod consent;
 mod delivery;
 mod fast_forward;
 mod fetch;
@@ -21,6 +22,7 @@ mod template;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use manifest::Manifest;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -49,6 +51,10 @@ enum Verb {
         /// URL without a ref seeds from its latest stable vX.Y.Z tag.
         #[arg(long)]
         template: Option<String>,
+        /// Use a template other than the default without asking first. Without
+        /// a terminal to ask on, such a template is refused unless this is given.
+        #[arg(long)]
+        trust_template: bool,
     },
     /// Clone missing repositories, converge configuration, link skills.
     Bootstrap {
@@ -119,7 +125,8 @@ fn main() -> ExitCode {
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("aw: {err:#}");
-            ExitCode::FAILURE
+            err.downcast_ref::<consent::Refused>()
+                .map_or(ExitCode::FAILURE, |refused| ExitCode::from(refused.code()))
         }
     }
 }
@@ -132,7 +139,18 @@ fn run() -> Result<bool> {
             dir,
             name,
             template,
-        } => init(dir, name, template.as_deref()).map(|()| true),
+            trust_template,
+        } => {
+            let mut stdin = std::io::stdin().lock();
+            let answer = if trust_template {
+                consent::Answer::Trusted
+            } else if stdin.is_terminal() {
+                consent::Answer::Ask(&mut stdin)
+            } else {
+                consent::Answer::NoTerminal
+            };
+            init(dir, name, template.as_deref(), answer).map(|()| true)
+        }
         Verb::Bootstrap { dir } => bootstrap(&manifest::resolve_root(dir)?),
         Verb::Doctor { dir } => doctor(&manifest::resolve_root(dir)?),
         Verb::Status {
@@ -160,7 +178,12 @@ fn status(root: &Path, json: bool, exit_code: bool) -> Result<bool> {
     Ok(!exit_code || !report.has_findings())
 }
 
-fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> Result<()> {
+fn init(
+    dir: Option<PathBuf>,
+    name: Option<String>,
+    template: Option<&str>,
+    answer: consent::Answer<'_>,
+) -> Result<()> {
     // Validate an explicit name before any filesystem or template side effect,
     // so a rejected name leaves no created directory behind. The derived
     // default is validated below, where the resolved root is available.
@@ -170,7 +193,7 @@ fn init(dir: Option<PathBuf>, name: Option<String>, template: Option<&str>) -> R
 
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
     let created_dirs = create_target(&dir)?;
-    let result = init_into(&dir, name, template);
+    let result = init_into(&dir, name, template, answer, !created_dirs.is_empty());
     if result.is_err() {
         remove_created(&created_dirs);
     }
@@ -214,12 +237,21 @@ fn remove_created(created: &[PathBuf]) {
     }
 }
 
-fn init_into(dir: &Path, name: Option<String>, template: Option<&str>) -> Result<()> {
+/// `created` says whether this `aw init` created `dir`, which the message for
+/// a declined template reports.
+fn init_into(
+    dir: &Path,
+    name: Option<String>,
+    template: Option<&str>,
+    answer: consent::Answer<'_>,
+    created: bool,
+) -> Result<()> {
     let root =
         std::fs::canonicalize(dir).with_context(|| format!("resolving {}", dir.display()))?;
 
     let mut source = template::Source::parse(template)?;
-    source.pinned_by(manifest::recorded_template(&root)?.as_ref());
+    let recorded = manifest::recorded_template(&root)?;
+    source.pinned_by(recorded.as_ref());
     let prepared = template::prepare(&source)?;
     manifest::validate_template(&root, &source.url, &prepared.reference, &prepared.sha)?;
     let name = if let Some(name) = name {
@@ -229,6 +261,10 @@ fn init_into(dir: &Path, name: Option<String>, template: Option<&str>) -> Result
         validate_name(&name)?;
         name
     };
+    if consent::needed(&source.url, recorded.as_ref()) {
+        let source_line = reporting::init_source(&source.url, &prepared.reference, &prepared.sha);
+        consent::obtain(answer, &source_line, prepared.root(), dir, created)?;
+    }
     let created = template::materialise(&root, &prepared)?;
     if created.iter().any(|path| path == manifest::FILENAME) {
         set_workspace_name(&root, &name)?;
@@ -593,7 +629,12 @@ mod tests {
     fn init_rejects_invalid_explicit_name_without_creating_the_directory() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("workspace");
-        let result = init(Some(target.clone()), Some("bad\"quote".to_owned()), None);
+        let result = init(
+            Some(target.clone()),
+            Some("bad\"quote".to_owned()),
+            None,
+            consent::Answer::NoTerminal,
+        );
         assert!(result.is_err(), "an invalid explicit name must fail init");
         assert!(
             !target.exists(),
@@ -612,7 +653,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("workspace");
         let template = missing_template(&temp);
-        assert!(init(Some(target.clone()), None, Some(&template)).is_err());
+        assert!(
+            init(
+                Some(target.clone()),
+                None,
+                Some(&template),
+                consent::Answer::NoTerminal
+            )
+            .is_err()
+        );
         assert!(
             !target.exists(),
             "a failed init must remove the directory it created"
@@ -624,7 +673,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("a/b/c");
         let template = missing_template(&temp);
-        assert!(init(Some(target), None, Some(&template)).is_err());
+        assert!(
+            init(
+                Some(target),
+                None,
+                Some(&template),
+                consent::Answer::NoTerminal
+            )
+            .is_err()
+        );
         assert!(
             !temp.path().join("a").exists(),
             "a failed init must remove every parent it created"
@@ -639,7 +696,15 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("keep.txt"), "mine\n").unwrap();
         let template = missing_template(&temp);
-        assert!(init(Some(target.clone()), None, Some(&template)).is_err());
+        assert!(
+            init(
+                Some(target.clone()),
+                None,
+                Some(&template),
+                consent::Answer::NoTerminal
+            )
+            .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("keep.txt")).unwrap(),
             "mine\n",
@@ -654,13 +719,130 @@ mod tests {
         std::fs::write(temp.path().join("sentinel"), "").unwrap();
         let target = temp.path().join("new/../other");
         let template = missing_template(&temp);
-        assert!(init(Some(target), None, Some(&template)).is_err());
+        assert!(
+            init(
+                Some(target),
+                None,
+                Some(&template),
+                consent::Answer::NoTerminal
+            )
+            .is_err()
+        );
         assert!(!temp.path().join("new").exists());
         assert!(!temp.path().join("other").exists());
         assert!(
             temp.path().join("sentinel").exists(),
             "cleanup must never reach the directory a `..` resolves to"
         );
+    }
+
+    /// A contract-valid template on disk, so consent is exercised without the
+    /// network. Any local path is a non-default template.
+    fn local_template(temp: &tempfile::TempDir) -> String {
+        let seed = temp.path().join("template");
+        std::fs::create_dir(&seed).unwrap();
+        std::fs::write(seed.join(".gitignore"), "*\n!.gitignore\n!workspace.toml\n").unwrap();
+        std::fs::write(
+            seed.join("workspace.toml"),
+            "[workspace]\nname = \"CHANGEME\"\n",
+        )
+        .unwrap();
+        git::run(&seed, &["init", "--quiet", "--initial-branch=main"]).unwrap();
+        git::run(&seed, &["add", "-A"]).unwrap();
+        git::run(
+            &seed,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "-m",
+                "seed",
+            ],
+        )
+        .unwrap();
+        seed.display().to_string()
+    }
+
+    fn refusal_code(result: Result<()>) -> u8 {
+        result
+            .expect_err("the template must be refused")
+            .downcast_ref::<consent::Refused>()
+            .expect("the error is a refusal")
+            .code()
+    }
+
+    #[test]
+    fn declined_template_leaves_no_created_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = local_template(&temp);
+        let target = temp.path().join("new/workspace");
+        let mut no = "n\n".as_bytes();
+        let result = init(
+            Some(target),
+            None,
+            Some(&template),
+            consent::Answer::Ask(&mut no),
+        );
+        assert_eq!(refusal_code(result), 1);
+        assert!(!temp.path().join("new").exists());
+    }
+
+    #[test]
+    fn declined_template_writes_nothing_to_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = local_template(&temp);
+        let target = temp.path().join("workspace");
+        std::fs::create_dir(&target).unwrap();
+        let mut no = "\n".as_bytes();
+        let result = init(
+            Some(target.clone()),
+            None,
+            Some(&template),
+            consent::Answer::Ask(&mut no),
+        );
+        assert_eq!(refusal_code(result), 1);
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn non_default_template_without_a_terminal_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = local_template(&temp);
+        let target = temp.path().join("workspace");
+        let result = init(
+            Some(target.clone()),
+            None,
+            Some(&template),
+            consent::Answer::NoTerminal,
+        );
+        assert_eq!(refusal_code(result), 2);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn trusted_template_seeds_and_a_repeat_init_does_not_ask_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = local_template(&temp);
+        let target = temp.path().join("workspace");
+        init(
+            Some(target.clone()),
+            None,
+            Some(&template),
+            consent::Answer::Trusted,
+        )
+        .expect("a trusted template seeds the workspace");
+        assert!(target.join("workspace.toml").is_file());
+
+        init(
+            Some(target),
+            None,
+            Some(&template),
+            consent::Answer::NoTerminal,
+        )
+        .expect("a repeat init of the recorded template needs no consent");
     }
 
     fn write_hook(dir: &Path, mode: u32) {

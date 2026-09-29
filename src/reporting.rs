@@ -38,6 +38,48 @@ pub fn init_no_commit() -> String {
     "No commit was made — review `git status` first.".to_owned()
 }
 
+pub fn consent_intro() -> String {
+    "This is not the default template. These files can run on this machine or steer an agent:"
+        .to_owned()
+}
+
+pub fn consent_nothing_acts() -> String {
+    "This is not the default template. No file in it runs on this machine or steers an agent."
+        .to_owned()
+}
+
+pub fn consent_file(path: &Path) -> String {
+    format!("  {}", path.display())
+}
+
+pub fn consent_folded(dir: &str, count: usize) -> String {
+    format!("  {dir}/  {count} files")
+}
+
+pub fn consent_link(path: &Path, target: &Path) -> String {
+    format!("  {} -> {}", path.display(), target.display())
+}
+
+pub fn consent_verify() -> String {
+    "Verify the template before trusting it.".to_owned()
+}
+
+pub fn consent_question() -> String {
+    "Use this template? [y/N] ".to_owned()
+}
+
+pub fn consent_cancelled_created(dir: &Path) -> String {
+    format!("cancelled; {} was not created", dir.display())
+}
+
+pub fn consent_cancelled_existing(dir: &Path) -> String {
+    format!("cancelled; nothing was written to {}", dir.display())
+}
+
+pub fn consent_no_terminal() -> String {
+    "no terminal to ask on; pass --trust-template to use this template without asking".to_owned()
+}
+
 pub fn bootstrap_workspace(name: &str) -> String {
     format!("workspace {name}")
 }

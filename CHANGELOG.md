@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `aw init` shows a non-default template's hooks, executables, agent files and
+  links, and asks before using it; `--trust-template` skips the question (#49)
+
 ### Fixed
 
 - `aw init` clones the default template over HTTPS, so it works without a GitHub
