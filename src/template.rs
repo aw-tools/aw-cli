@@ -12,7 +12,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::git;
 
-pub const DEFAULT_URL: &str = "git@github.com:aw-tools/workspace.template.git";
+pub const DEFAULT_URL: &str = "https://github.com/aw-tools/workspace.template.git";
+
+/// The default before it moved to HTTPS. Workspaces created then record it, and
+/// a repeat init must still recognise it as the default.
+const PREVIOUS_DEFAULT_URL: &str = "git@github.com:aw-tools/workspace.template.git";
+
+/// Whether two template URLs name the same source. The default template counts
+/// as one source under either address it has had.
+pub fn same_source(a: &str, b: &str) -> bool {
+    let is_default = |url: &str| url == DEFAULT_URL || url == PREVIOUS_DEFAULT_URL;
+    a == b || (is_default(a) && is_default(b))
+}
 
 /// Which commit of a template to seed from.
 #[derive(Debug, Eq, PartialEq)]
@@ -63,7 +74,7 @@ impl Source {
     /// recorded, so a repeat `aw init` stays a no-op after a newer release.
     pub fn pinned_by(&mut self, recorded: Option<&crate::manifest::Template>) {
         if let Some(recorded) = recorded {
-            if self.reference == Reference::LatestStable && recorded.url == self.url {
+            if self.reference == Reference::LatestStable && same_source(&recorded.url, &self.url) {
                 self.reference = Reference::Named(recorded.reference.clone());
             }
         }
@@ -373,10 +384,33 @@ mod tests {
         assert_eq!(
             Source::parse(None).expect("default parses"),
             Source {
-                url: "git@github.com:aw-tools/workspace.template.git".to_owned(),
+                url: "https://github.com/aw-tools/workspace.template.git".to_owned(),
                 reference: Reference::LatestStable,
             }
         );
+    }
+
+    #[test]
+    fn a_workspace_recording_the_previous_default_is_pinned_by_the_current_one() {
+        let recorded = crate::manifest::Template {
+            url: "git@github.com:aw-tools/workspace.template.git".to_owned(),
+            reference: "v0.1.0".to_owned(),
+            sha: "0000000".to_owned(),
+        };
+        let mut source = Source::parse(None).expect("default parses");
+        source.pinned_by(Some(&recorded));
+        assert_eq!(source.reference, Reference::Named("v0.1.0".to_owned()));
+    }
+
+    #[test]
+    fn only_the_default_template_is_one_source_across_addresses() {
+        assert!(same_source(DEFAULT_URL, PREVIOUS_DEFAULT_URL));
+        assert!(same_source(PREVIOUS_DEFAULT_URL, DEFAULT_URL));
+        assert!(!same_source(
+            "https://github.com/someone/else.git",
+            "git@github.com:someone/else.git"
+        ));
+        assert!(!same_source(DEFAULT_URL, "git@github.com:someone/else.git"));
     }
 
     #[test]

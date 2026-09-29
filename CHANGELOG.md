@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `aw init` clones the default template over HTTPS, so it works without a GitHub
+  SSH key (#47)
+
 ## [0.2.0] - 2026-09-25
 
 ### Added

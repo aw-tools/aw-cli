@@ -411,7 +411,9 @@ pub fn validate_template(root: &Path, url: &str, reference: &str, sha: &str) -> 
 
     if let Some(existing) = parsed.template.as_ref() {
         anyhow::ensure!(
-            existing.url == url && existing.reference == reference && existing.sha == sha,
+            crate::template::same_source(&existing.url, url)
+                && existing.reference == reference
+                && existing.sha == sha,
             "workspace already records template {}@{} ({})",
             existing.url,
             existing.reference,
@@ -436,7 +438,9 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
 
     if let Some(existing) = parsed.template.as_ref() {
         anyhow::ensure!(
-            existing.url == url && existing.reference == reference && existing.sha == sha,
+            crate::template::same_source(&existing.url, url)
+                && existing.reference == reference
+                && existing.sha == sha,
             "workspace already records template {}@{} ({})",
             existing.url,
             existing.reference,
