@@ -66,6 +66,75 @@ fn init_rejects_credentials_in_an_http_template_url() {
     .stderr(predicate::str::contains("must not contain credentials"));
 }
 
+// --- init: consent for a non-default template -------------------------------
+
+/// A contract-valid template repository with an executable hook, so the
+/// consent listing has something to show.
+fn local_template(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let seed = root.join("template");
+    std::fs::create_dir_all(seed.join(".githooks")).expect("hooks dir");
+    std::fs::write(seed.join(".gitignore"), "*\n").expect("gitignore");
+    write_manifest(&seed, "CHANGEME", "");
+    let hook = seed.join(".githooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\n").expect("hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod hook");
+    for args in [
+        &["init", "-q", "--initial-branch=main"][..],
+        &["add", "-A", "--force"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "seed",
+        ],
+    ] {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&seed)
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} succeeds");
+    }
+    seed
+}
+
+#[test]
+fn init_refuses_a_non_default_template_without_a_terminal() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = local_template(temp.path());
+    let target = temp.path().join("demo.workspace");
+    aw().arg("init")
+        .arg("--template")
+        .arg(&template)
+        .arg(&target)
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(".githooks/pre-commit"))
+        .stderr(predicate::str::contains("pass --trust-template"));
+    assert!(!target.exists(), "a refused template leaves no directory");
+}
+
+#[test]
+fn init_trusts_a_non_default_template_with_the_flag() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = local_template(temp.path());
+    let target = temp.path().join("demo.workspace");
+    aw().args(["init", "--trust-template", "--template"])
+        .arg(&template)
+        .arg(&target)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Use this template?").not());
+    assert!(target.join(".githooks/pre-commit").is_file());
+}
+
 // --- adopt: rejection paths -------------------------------------------------
 
 #[test]
