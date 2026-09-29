@@ -258,13 +258,13 @@ pub fn clone_template(source: &str, destination: &Path) -> Result<()> {
         .with_context(|| format!("waiting for template clone {source}"))?
     else {
         anyhow::bail!(
-            "cloning template {source} timed out after {}s",
+            "cloning template {source} timed out after {}s; check your network and the template host",
             TEMPLATE_GIT_TIMEOUT.as_secs()
         );
     };
     anyhow::ensure!(
         output.status.success(),
-        "cloning template {source} failed: {}",
+        "cloning template {source} failed: {}; check the address and your access",
         output.stderr.trim()
     );
     Ok(())
@@ -520,13 +520,13 @@ fn fetch_ref(dir: &Path, reference: &str) -> Result<()> {
         .with_context(|| format!("waiting while fetching template ref {reference:?}"))?
     else {
         anyhow::bail!(
-            "fetching template ref {reference:?} timed out after {}s",
+            "fetching template ref {reference:?} timed out after {}s; check your network and the template host",
             TEMPLATE_GIT_TIMEOUT.as_secs()
         );
     };
     anyhow::ensure!(
         output.status.success(),
-        "fetching template ref {reference:?} failed: {}",
+        "fetching template ref {reference:?} failed: {}; name a tag or branch the template has",
         output.stderr.trim()
     );
     Ok(())

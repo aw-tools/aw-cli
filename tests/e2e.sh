@@ -360,6 +360,37 @@ fi
 assert "invalid-manifest init leaves the target byte-for-byte unchanged" \
 	"$(diff -qr "$WORK/invalid-before-init" "$WORK/invalid.workspace")" ""
 
+if "$AW" init --template "$WORK/origins/template.git@v9.9.9" \
+	"$WORK/new-missing-ref.workspace" >"$WORK/new-missing-ref-init.log" 2>&1; then
+	fail "missing-ref init into a new directory fails"
+else
+	pass "missing-ref init into a new directory fails"
+fi
+assert "missing-ref init removes the directory it created" \
+	"$([ -e "$WORK/new-missing-ref.workspace" ] && echo present || echo absent)" absent
+assert "missing-ref init hints at naming an existing ref" \
+	"$(grep -c 'name a tag or branch the template has' "$WORK/new-missing-ref-init.log")" 1
+
+if "$AW" init --template "$WORK/origins/no-such-template.git" \
+	"$WORK/unknown.workspace" >"$WORK/unknown-init.log" 2>&1; then
+	fail "unknown-template init fails"
+else
+	pass "unknown-template init fails"
+fi
+assert "unknown-template init removes the directory it created" \
+	"$([ -e "$WORK/unknown.workspace" ] && echo present || echo absent)" absent
+assert "unknown-template init hints at the address and access" \
+	"$(grep -c 'check the address and your access' "$WORK/unknown-init.log")" 1
+
+if "$AW" init --template "$WORK/origins/invalid-template.git@main" \
+	"$WORK/nested/deeper/invalid.workspace" --name invalid >"$WORK/nested-init.log" 2>&1; then
+	fail "nested invalid-manifest init fails"
+else
+	pass "nested invalid-manifest init fails"
+fi
+assert "nested failed init removes every parent it created" \
+	"$([ -e "$WORK/nested" ] && echo present || echo absent)" absent
+
 "$AW" init --template "$WORK/seed-template" \
 	"$WORK/working-tree.workspace" --name working >"$WORK/init-working.log" 2>&1
 assert "init accepts a local working-tree template" \

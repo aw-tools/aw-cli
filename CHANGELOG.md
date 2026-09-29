@@ -10,6 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `aw init` clones the default template over HTTPS, so it works without a GitHub
   SSH key (#47)
+- A failed `aw init` no longer leaves empty directories behind, and its error
+  says what to check next (#48)
 
 ## [0.2.0] - 2026-09-25
 
