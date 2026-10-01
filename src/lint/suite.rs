@@ -1,16 +1,21 @@
 //! The conformance-suite reader and runner, test-only.
 //!
 //! A fixture is a directory holding `fixture.toml` (the verdict, the globs
-//! declaring which files are artefacts, an optional revision), `registry.toml`,
-//! an optional `units.toml`, and the files themselves. The copy under
-//! `tests/suite/` names the commit it was taken from.
+//! declaring which files are artefacts, an optional revision) and a tree:
+//! `registry.toml`, an optional `units.toml`, and the files themselves. A
+//! fixture whose clause concerns commits holds its trees under `steps/01` and
+//! `steps/02`; the runner commits the first, stages the second and runs staged
+//! mode. The copy under `tests/suite/` names the commit it was taken from.
 
-use super::model::{Model, Unit};
+use super::model::{Change, Head, Model, Unit};
 use super::registry::RegistryFile;
-use super::{Refusal, layout, rules};
+use super::tree::{self, Tree};
+use super::{Refusal, commit, layout, rules};
 use ignore::gitignore::GitignoreBuilder;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Deserialize)]
 struct FixtureFile {
@@ -34,34 +39,110 @@ struct UnitEntry {
 
 struct Fixture {
     file: FixtureFile,
-    model: Model,
+    change: Change,
 }
 
 fn read(dir: &Path) -> Fixture {
     let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
-    let registry = RegistryFile::parse(&text(&dir.join("registry.toml")), "registry.toml").unwrap();
+    let steps = dir.join("steps");
+    let change = if steps.exists() {
+        staged(&steps, &file.artefacts)
+    } else {
+        let mut files = files(dir);
+        files.remove("fixture.toml");
+        Change {
+            staged: model(&files, &file.artefacts),
+            head: None,
+        }
+    };
+    Fixture { file, change }
+}
 
-    let mut declaration = GitignoreBuilder::new(dir);
-    for glob in &file.artefacts {
+/// Commit `steps/01` in a fresh repository, stage `steps/02` over it, and
+/// read both trees from git as staged mode does.
+fn staged(steps: &Path, globs: &[String]) -> Change {
+    let repository = tempfile::tempdir().unwrap();
+    let root = repository.path();
+    git(root, &["init", "--quiet"]);
+    copy(&steps.join("01"), root);
+    git(root, &["add", "--all"]);
+    git(root, &["commit", "--quiet", "--message", "01"]);
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name() == Some(".git".as_ref()) {
+            continue;
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).unwrap();
+        } else {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    copy(&steps.join("02"), root);
+    git(root, &["add", "--all"]);
+
+    let index = Tree::index(root).unwrap();
+    let head = Tree::head(root).unwrap();
+    let (renames, deleted) = tree::moves(root, &head, &index).unwrap();
+    Change {
+        staged: model(&tree_files(&index), globs),
+        head: Some(Head {
+            model: model(&tree_files(&head), globs),
+            renames,
+            deleted,
+        }),
+    }
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn copy(from: &Path, to: &Path) {
+    for (path, text) in files(from) {
+        let target = to.join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, text).unwrap();
+    }
+}
+
+fn tree_files(tree: &Tree) -> BTreeMap<String, String> {
+    tree.texts(tree.paths()).unwrap().into_iter().collect()
+}
+
+/// The model of one fixture tree, each file a path relative to the tree.
+fn model(files: &BTreeMap<String, String>, globs: &[String]) -> Model {
+    let registry = RegistryFile::parse(&files["registry.toml"], "registry.toml").unwrap();
+    let mut declaration = GitignoreBuilder::new("");
+    for glob in globs {
         declaration.add_line(None, glob).unwrap();
     }
     let declaration = declaration.build().unwrap();
-    let mut files: Vec<(String, String)> = walk(dir)
-        .into_iter()
-        .filter_map(|path| {
-            let relative = path.strip_prefix(dir).unwrap().to_str().unwrap().to_owned();
-            declaration
-                .matched(&relative, false)
-                .is_ignore()
-                .then(|| (relative, text(&path)))
-        })
+    let artefacts = files
+        .iter()
+        .filter(|(path, _)| declaration.matched(path, false).is_ignore())
+        .map(|(path, text)| (path.clone(), text.clone()))
         .collect();
-    files.sort();
 
-    let mut model = layout::read(&registry, files);
-    let units = dir.join("units.toml");
-    model.units = if units.exists() {
-        let units: UnitsFile = toml::from_str(&text(&units)).unwrap();
+    let mut model = layout::read(&registry, artefacts);
+    model.units = files.get("units.toml").map_or_else(Vec::new, |units| {
+        let units: UnitsFile = toml::from_str(units).unwrap();
         units
             .unit
             .into_iter()
@@ -72,10 +153,19 @@ fn read(dir: &Path) -> Fixture {
                 depends_on: Vec::new(),
             })
             .collect()
-    } else {
-        Vec::new()
-    };
-    Fixture { file, model }
+    });
+    model
+}
+
+/// Every file under `dir`, by path relative to it.
+fn files(dir: &Path) -> BTreeMap<String, String> {
+    walk(dir)
+        .into_iter()
+        .map(|path| {
+            let relative = path.strip_prefix(dir).unwrap().to_str().unwrap().to_owned();
+            (relative, text(&path))
+        })
+        .collect()
 }
 
 fn text(path: &Path) -> String {
@@ -100,7 +190,7 @@ fn verdict(fixture: &Fixture) -> Result<Vec<rules::Finding>, Refusal> {
     if let Some(revision) = &fixture.file.revision {
         super::recognise(revision)?;
     }
-    Ok(rules::check(&fixture.model))
+    Ok(commit::check(&fixture.change))
 }
 
 /// The clauses a rule enforces, so a failing fixture is known to fail for its
@@ -119,6 +209,12 @@ fn clauses(rule: &str) -> &'static [&'static str] {
         "ephemeral-terminal" => &["4.1.1"],
         "unit-undeclared" => &["4.2.1"],
         "open-in-closed-unit" => &["4.2.3"],
+        "compacted-empty" => &["4.2.4"],
+        "status-skipped" | "status-backwards" => &["3.3"],
+        "binding-rewritten" => &["3.6"],
+        "residue-missing" => &["4.1.2"],
+        "ephemeral-archived" => &["4.1.4"],
+        "close-with-unit" => &["4.2.2"],
         other => panic!("rule {other} cites no clause"),
     }
 }
@@ -128,14 +224,18 @@ fn suite() -> PathBuf {
 }
 
 #[test]
-fn every_single_tree_fixture_reaches_its_verdict() {
+fn every_fixture_reaches_its_verdict() {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(suite())
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|dir| !dir.join("steps").exists())
         .collect();
     dirs.sort();
-    assert_eq!(dirs.len(), 32, "revision 1 holds 32 single-tree fixtures");
+    assert_eq!(dirs.len(), 52, "revision 1 holds 52 fixtures");
+    assert_eq!(
+        dirs.iter().filter(|dir| dir.join("steps").exists()).count(),
+        20,
+        "20 of them hold commits"
+    );
 
     let mut wrong = Vec::new();
     for dir in &dirs {
@@ -177,7 +277,8 @@ fn every_single_tree_fixture_reaches_its_verdict() {
 fn an_undeclared_file_is_not_read() {
     let fixture = read(&suite().join("2.6-undeclared-file-exempt"));
     let paths: Vec<&str> = fixture
-        .model
+        .change
+        .staged
         .artefacts
         .iter()
         .map(|artefact| artefact.path.as_str())

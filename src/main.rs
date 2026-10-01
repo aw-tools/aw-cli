@@ -115,11 +115,12 @@ enum Verb {
         path: PathBuf,
     },
     /// Check the workspace's artefacts against the contract revision
-    /// `workspace.toml` declares. Exits 1 on any failure, 2 when the revision,
-    /// the registry or `.awlintignore` cannot be read.
+    /// `workspace.toml` declares: the staged tree and what it changes from
+    /// `HEAD`, or with `--all` the working tree. Exits 1 on any failure, 2 when
+    /// the revision, the registry or `.awlintignore` cannot be read.
     Lint {
         /// Check every tracked artefact as it stands in the working tree.
-        #[arg(long, required = true)]
+        #[arg(long)]
         all: bool,
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
@@ -181,8 +182,14 @@ fn run() -> Result<bool> {
             dir,
         } => fast_forward::run(&manifest::resolve_root(dir)?, concurrency, dry_run),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
-        // `--all` is required until the staged mode exists.
-        Verb::Lint { all: _, dir } => lint::run_all(&manifest::resolve_root(dir)?),
+        Verb::Lint { all, dir } => {
+            let root = manifest::resolve_root(dir)?;
+            if all {
+                lint::run_all(&root)
+            } else {
+                lint::run_staged(&root)
+            }
+        }
     }
 }
 

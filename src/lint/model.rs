@@ -1,6 +1,6 @@
 //! The one model every rule reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Model {
     pub registry: Registry,
@@ -21,13 +21,6 @@ pub struct Artefact {
     /// Relative to the workspace root, `/`-separated.
     pub path: String,
     pub header: Header,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the commit rules read the body; no snapshot rule does"
-        )
-    )]
     pub body: String,
 }
 
@@ -64,4 +57,19 @@ pub struct Unit {
         expect(dead_code, reason = "the layout rules read it; no contract rule does")
     )]
     pub depends_on: Vec<String>,
+}
+
+/// A commit about to be made: the staged tree, and `HEAD` when there is one.
+pub struct Change {
+    pub staged: Model,
+    pub head: Option<Head>,
+}
+
+/// The tree at `HEAD`, and where the staged tree moves its files.
+pub struct Head {
+    pub model: Model,
+    /// Every file renamed in the commit, artefact or not, old path to new.
+    pub renames: BTreeMap<String, String>,
+    /// Every file the commit deletes, artefact or not.
+    pub deleted: BTreeSet<String>,
 }

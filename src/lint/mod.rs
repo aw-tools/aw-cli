@@ -3,7 +3,10 @@
 //! Every rule reads one internal model, [`model::Model`]. Readers build it: the
 //! layout reader from a workspace laid out as the template lays it out, and a
 //! test-only reader from a conformance-suite fixture. No rule reads a file.
+//! Staged mode builds two, the staged tree and `HEAD`, and the commit rules
+//! compare them.
 
+mod commit;
 mod frontmatter;
 mod layout;
 mod model;
@@ -11,6 +14,7 @@ mod registry;
 mod rules;
 #[cfg(test)]
 mod suite;
+mod tree;
 
 use crate::manifest::{Manifest, TemplateBlock};
 use crate::reporting;
@@ -70,11 +74,21 @@ fn recognise(contract: &toml::Value) -> Result<(), Refusal> {
 /// tree. Failures go to stdout, the count to stderr. Returns whether there
 /// were none.
 pub fn run_all(root: &Path) -> Result<bool> {
-    let manifest = Manifest::load(root)?;
-    check_revision(manifest.template.as_ref())?;
-    let model = layout::read_worktree(root)?;
-    let findings = rules::check(&model);
-    for finding in &findings {
+    check_revision(Manifest::load(root)?.template.as_ref())?;
+    Ok(report(&rules::check(&layout::read_worktree(root)?)))
+}
+
+/// `aw lint`: check the staged tree, and what it changes from `HEAD`. A
+/// repository with no `HEAD` gets the snapshot rules alone.
+pub fn run_staged(root: &Path) -> Result<bool> {
+    check_revision(Manifest::load(root)?.template.as_ref())?;
+    Ok(report(&commit::check(&layout::read_staged(root)?)))
+}
+
+/// Print each finding to stdout and the count to stderr; whether there were
+/// none.
+fn report(findings: &[rules::Finding]) -> bool {
+    for finding in findings {
         println!(
             "{}",
             reporting::lint_finding(&finding.path, &finding.message, finding.rule)
@@ -82,7 +96,7 @@ pub fn run_all(root: &Path) -> Result<bool> {
     }
     // No rule warns yet.
     eprintln!("{}", reporting::lint_count(findings.len(), 0));
-    Ok(findings.is_empty())
+    findings.is_empty()
 }
 
 #[cfg(test)]

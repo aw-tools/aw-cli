@@ -404,8 +404,26 @@ fn lint_fixture(template: &str, note: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn lint_without_a_mode_is_a_usage_error() {
-    aw().arg("lint").assert().failure().code(2);
+fn lint_checks_the_staged_file_not_the_working_tree() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\nclass: standing\n---\n",
+    );
+    std::fs::write(
+        root.path().join("context/NOTES.md"),
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    )
+    .expect("fix the working tree only");
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[class-declared]"))
+        .stderr("1 failure, 0 warnings\n");
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .success();
 }
 
 #[test]

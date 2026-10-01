@@ -12,6 +12,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   may hold `contract` alone (#51)
 - `aw lint --all` checks every tracked artefact against the contract, printing
   each failure with the name of the rule it breaks (#52)
+- `aw lint` checks the commit about to be made, including what it changes: a
+  status moving backwards, a recorded decision edited, or a finished note
+  deleted without its outcome written down elsewhere (#53)
 
 ## [0.3.0] - 2026-09-29
 

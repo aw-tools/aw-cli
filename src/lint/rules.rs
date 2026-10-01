@@ -6,13 +6,14 @@
 
 use super::model::{Artefact, Header, Model, Registry, Unit};
 
-const BINDING: &str = "binding";
-const EPHEMERAL: &str = "ephemeral";
-const EPISODIC: &str = "episodic";
+pub(super) const BINDING: &str = "binding";
+pub(super) const EPHEMERAL: &str = "ephemeral";
+pub(super) const EPISODIC: &str = "episodic";
 const SUPERSEDED: &str = "superseded";
-const EPHEMERAL_TERMINAL: [&str; 2] = ["graduated", "expired"];
-const OPEN: &str = "open";
-const CLOSED: &str = "closed";
+pub(super) const EPHEMERAL_TERMINAL: [&str; 2] = ["graduated", "expired"];
+pub(super) const OPEN: &str = "open";
+pub(super) const CLOSED: &str = "closed";
+const COMPACTED: &str = "compacted";
 
 /// The field a superseded binding artefact names its successor in.
 const SUCCESSOR: &str = "superseded_by";
@@ -123,35 +124,50 @@ fn check_artefact(
             "ephemeral-terminal",
             format!("ephemeral artefact is '{status}' and must leave the working tree"),
         ),
-        EPISODIC => {
-            let owners: Vec<&Unit> = units
-                .iter()
-                .filter(|unit| unit.members.contains(&artefact.path))
-                .collect();
-            if owners.is_empty() {
-                found(
-                    "unit-undeclared",
-                    "episodic artefact belongs to no declared unit of work".to_owned(),
-                );
-            }
-            for unit in owners {
-                if unit.state == CLOSED && status == OPEN {
-                    found(
-                        "open-in-closed-unit",
-                        format!(
-                            "unit of work '{}' is closed, but this artefact is still 'open'",
-                            unit.name
-                        ),
-                    );
-                }
-            }
-        }
+        EPISODIC => check_episodic(artefact, status, units, found),
         _ => {}
     }
 }
 
+/// Clauses 4.2.1, 4.2.3 and 4.2.4: an episodic artefact, its unit of work and
+/// its compaction.
+fn check_episodic(
+    artefact: &Artefact,
+    status: &str,
+    units: &[Unit],
+    found: &mut impl FnMut(&'static str, String),
+) {
+    if status == COMPACTED && artefact.body.trim().is_empty() {
+        found(
+            "compacted-empty",
+            "compacted artefact keeps nothing beyond its frontmatter".to_owned(),
+        );
+    }
+    let owners: Vec<&Unit> = units
+        .iter()
+        .filter(|unit| unit.members.contains(&artefact.path))
+        .collect();
+    if owners.is_empty() {
+        found(
+            "unit-undeclared",
+            "episodic artefact belongs to no declared unit of work".to_owned(),
+        );
+    }
+    for unit in owners {
+        if unit.state == CLOSED && status == OPEN {
+            found(
+                "open-in-closed-unit",
+                format!(
+                    "unit of work '{}' is closed, but this artefact is still 'open'",
+                    unit.name
+                ),
+            );
+        }
+    }
+}
+
 /// A field's value, unless it is absent or empty.
-fn declared<'a>(artefact: &'a Artefact, key: &str) -> Option<&'a str> {
+pub(super) fn declared<'a>(artefact: &'a Artefact, key: &str) -> Option<&'a str> {
     artefact.field(key).filter(|value| !value.is_empty())
 }
 

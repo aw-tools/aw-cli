@@ -9,8 +9,9 @@
 
 use super::Refusal;
 use super::frontmatter;
-use super::model::{Artefact, Model, Unit};
+use super::model::{Artefact, Change, Head, Model, Unit};
 use super::registry::RegistryFile;
+use super::tree::{self, Tree};
 use crate::git;
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -92,6 +93,47 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
         }
     }
     Ok(read(&registry, files))
+}
+
+/// Build the model of the staged tree, and of `HEAD` with what the commit
+/// moves, as plain `aw lint` reads them. The working tree is never read.
+pub fn read_staged(root: &Path) -> Result<Change> {
+    let index = Tree::index(root)?;
+    let registry_text = index
+        .text(REGISTRY)?
+        .ok_or_else(|| Refusal::new(format!("{REGISTRY}: not in the index")))?;
+    let registry = RegistryFile::parse(&registry_text, REGISTRY)?;
+    let scope = Scope::new(index.text(IGNORE_FILE)?.as_deref(), &registry)?;
+    let staged = read(
+        &registry,
+        index.texts(index.paths().filter(|path| scope.admits(path)))?,
+    );
+    if !git::has_head(root)? {
+        return Ok(Change { staged, head: None });
+    }
+
+    let head = Tree::head(root)?;
+    // A `HEAD` without a registry, or with one committed past the linter that
+    // does not parse, gives the commit rules no class to compare by; the staged
+    // tree is still checked in full. Which files are artefacts is the staged
+    // tree's declaration on both sides.
+    let head_registry = head
+        .text(REGISTRY)?
+        .and_then(|text| RegistryFile::parse(&text, REGISTRY).ok())
+        .unwrap_or_default();
+    let model = read(
+        &head_registry,
+        head.texts(head.paths().filter(|path| scope.admits(path)))?,
+    );
+    let (renames, deleted) = tree::moves(root, &head, &index)?;
+    Ok(Change {
+        staged,
+        head: Some(Head {
+            model,
+            renames,
+            deleted,
+        }),
+    })
 }
 
 /// Build the model from in-scope files, each a path and its contents.
@@ -375,6 +417,150 @@ status = \"closed\"
                 && !path.ends_with("README.md")
         });
         assert_eq!(worktree_paths(root), expected);
+    }
+
+    const STAGED_REGISTRY: &str = "\
+[class.standing]
+statuses = [\"live\", \"retired\"]
+
+[class.ephemeral]
+statuses = [\"open\", \"graduated\", \"expired\"]
+
+[kind.doctrine]
+class = \"standing\"
+
+[kind.handover]
+class = \"ephemeral\"
+";
+    const CLEAN: &str = "---\nkind: doctrine\nstatus: live\n---\n";
+    const CLASSED: &str = "---\nkind: doctrine\nstatus: live\nclass: standing\n---\n";
+
+    fn staged_repository() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        git(temp.path(), &["init", "--quiet"]);
+        write(temp.path(), REGISTRY, STAGED_REGISTRY);
+        temp
+    }
+
+    fn commit_all(root: &Path) {
+        git(root, &["add", "--all"]);
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "--message",
+                "commit",
+            ],
+        );
+    }
+
+    fn staged_findings(root: &Path) -> Vec<(String, &'static str)> {
+        super::super::commit::check(&read_staged(root).unwrap())
+            .into_iter()
+            .map(|finding| (finding.path, finding.rule))
+            .collect()
+    }
+
+    #[test]
+    fn a_partially_staged_file_is_checked_as_staged() {
+        let temp = staged_repository();
+        let root = temp.path();
+        write(root, "context/NOTES.md", CLASSED);
+        git(root, &["add", "--all"]);
+        write(root, "context/NOTES.md", CLEAN);
+        assert_eq!(
+            staged_findings(root),
+            [("context/NOTES.md".to_owned(), "class-declared")]
+        );
+
+        git(root, &["add", "--all"]);
+        write(root, "context/NOTES.md", CLASSED);
+        assert!(staged_findings(root).is_empty());
+    }
+
+    #[test]
+    fn awkward_paths_are_read_whole() {
+        let temp = staged_repository();
+        let root = temp.path();
+        git(root, &["config", "core.quotePath", "true"]);
+        for path in [
+            "context/a b.md",
+            "context/-dash.md",
+            "context/Optionen – Notizen.md",
+        ] {
+            write(root, path, CLASSED);
+        }
+        commit_all(root);
+        git(root, &["mv", "--", "context/a b.md", "context/c d.md"]);
+
+        let change = read_staged(root).unwrap();
+        let renames: Vec<(&str, &str)> = change
+            .head
+            .as_ref()
+            .unwrap()
+            .renames
+            .iter()
+            .map(|(from, to)| (from.as_str(), to.as_str()))
+            .collect();
+        assert_eq!(renames, [("context/a b.md", "context/c d.md")]);
+        assert_eq!(
+            staged_findings(root),
+            [
+                "context/-dash.md",
+                "context/Optionen – Notizen.md",
+                "context/c d.md"
+            ]
+            .map(|path| (path.to_owned(), "class-declared"))
+        );
+    }
+
+    #[test]
+    fn a_repository_with_no_head_gets_the_snapshot_rules_alone() {
+        let temp = staged_repository();
+        let root = temp.path();
+        write(
+            root,
+            "context/handover-a.md",
+            "---\nkind: handover\nstatus: graduated\n---\n",
+        );
+        git(root, &["add", "--all"]);
+        assert!(read_staged(root).unwrap().head.is_none());
+        assert_eq!(
+            staged_findings(root),
+            [("context/handover-a.md".to_owned(), "ephemeral-terminal")]
+        );
+    }
+
+    #[test]
+    fn an_empty_register_and_an_empty_tree_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "--quiet"]);
+        write(root, REGISTRY, "");
+        git(root, &["add", "--all"]);
+        assert!(staged_findings(root).is_empty());
+
+        commit_all(root);
+        write(root, REGISTRY, STAGED_REGISTRY);
+        git(root, &["add", "--all"]);
+        assert!(staged_findings(root).is_empty());
+    }
+
+    #[test]
+    fn a_registry_only_in_the_working_tree_is_refused() {
+        let temp = staged_repository();
+        let error = read_staged(temp.path()).err().expect("nothing staged");
+        let refusal = error.downcast_ref::<Refusal>().expect("a refusal");
+        assert_eq!(refusal.to_string(), format!("{REGISTRY}: not in the index"));
     }
 
     #[test]
