@@ -12,6 +12,7 @@ mod fast_forward;
 mod fetch;
 mod garden;
 mod git;
+mod lint;
 mod manifest;
 mod reporting;
 mod skills;

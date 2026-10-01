@@ -19,7 +19,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     #[serde(default)]
-    pub template: Option<Template>,
+    pub template: Option<TemplateBlock>,
     pub workspace: Workspace,
     #[serde(default)]
     pub identity: Option<Identity>,
@@ -34,10 +34,37 @@ pub struct Workspace {
     pub name: String,
 }
 
+/// The `[template]` block. Provenance is all three of `url`, `ref` and `sha` or
+/// none of them: a hand-built workspace carries `contract` alone.
 #[derive(Debug, Deserialize)]
+pub struct TemplateBlock {
+    url: Option<String>,
+    #[serde(rename = "ref")]
+    reference: Option<String>,
+    sha: Option<String>,
+    /// The conformance-suite revision the workspace conforms to. Kept as a raw
+    /// value so a wrong type is `aw lint`'s refusal, not every verb's.
+    pub contract: Option<toml::Value>,
+}
+
+impl TemplateBlock {
+    /// The template this workspace was seeded from, if the block records one.
+    pub fn provenance(&self) -> Result<Option<Template>> {
+        match (&self.url, &self.reference, &self.sha) {
+            (Some(url), Some(reference), Some(sha)) => Ok(Some(Template {
+                url: url.clone(),
+                reference: reference.clone(),
+                sha: sha.clone(),
+            })),
+            (None, None, None) => Ok(None),
+            _ => anyhow::bail!("[template] must record url, ref and sha together, or none of them"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Template {
     pub url: String,
-    #[serde(rename = "ref")]
     pub reference: String,
     pub sha: String,
 }
@@ -226,6 +253,9 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<()> {
+        if let Some(block) = &self.template {
+            block.provenance()?;
+        }
         let mut seen = std::collections::BTreeSet::new();
         for repo in &self.repos {
             check_contained(&repo.path)?;
@@ -390,7 +420,10 @@ pub fn recorded_template(root: &Path) -> Result<Option<Template>> {
     };
     let parsed: Manifest =
         toml::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))?;
-    Ok(parsed.template)
+    match parsed.template {
+        Some(block) => block.provenance(),
+        None => Ok(None),
+    }
 }
 
 /// Reject a re-init whose resolved source conflicts with recorded provenance.
@@ -409,7 +442,8 @@ pub fn validate_template(root: &Path, url: &str, reference: &str, sha: &str) -> 
         .validate()
         .with_context(|| format!("in manifest {}", path.display()))?;
 
-    if let Some(existing) = parsed.template.as_ref() {
+    if let Some(block) = parsed.template.as_ref() {
+        let existing = provenance_or_refuse(block)?;
         anyhow::ensure!(
             crate::template::same_source(&existing.url, url)
                 && existing.reference == reference
@@ -436,7 +470,8 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
         .validate()
         .with_context(|| format!("in manifest {}", path.display()))?;
 
-    if let Some(existing) = parsed.template.as_ref() {
+    if let Some(block) = parsed.template.as_ref() {
+        let existing = provenance_or_refuse(block)?;
         anyhow::ensure!(
             crate::template::same_source(&existing.url, url)
                 && existing.reference == reference
@@ -450,20 +485,31 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
     }
 
     let quote = |value: &str| toml::Value::String(value.to_owned()).to_string();
+    let revision = crate::lint::REVISION;
     let provenance = format!(
-        "[template]\nurl = {}\nref = {}\nsha = {}\n\n",
+        "[template]\nurl = {}\nref = {}\nsha = {}\ncontract = {revision}\n\n",
         quote(url),
         quote(reference),
         quote(sha)
     );
     std::fs::write(&path, format!("{provenance}{text}"))
         .with_context(|| format!("writing {}", path.display()))?;
-    parsed.template = Some(Template {
-        url: url.to_owned(),
-        reference: reference.to_owned(),
-        sha: sha.to_owned(),
+    parsed.template = Some(TemplateBlock {
+        url: Some(url.to_owned()),
+        reference: Some(reference.to_owned()),
+        sha: Some(sha.to_owned()),
+        contract: Some(toml::Value::Integer(revision)),
     });
     Ok(parsed)
+}
+
+/// The provenance a `[template]` block records. A block without one belongs to
+/// a hand-built workspace, which `aw init` cannot add provenance to: the
+/// block is the human's, and a second `[template]` table would not parse.
+fn provenance_or_refuse(block: &TemplateBlock) -> Result<Template> {
+    block.provenance()?.ok_or_else(|| {
+        anyhow::anyhow!("workspace.toml has a [template] block without url, ref and sha; aw init records provenance only in a workspace that has none")
+    })
 }
 
 /// Resolve a checkout and express it as a portable workspace-relative path.
@@ -706,6 +752,67 @@ mod tests {
 
     /// Parse a one-repo manifest whose repo carries `skills_fragment` verbatim,
     /// returning the manifest without validating it.
+    fn manifest_with_template(block: &str) -> Manifest {
+        toml::from_str(&format!("[template]\n{block}\n[workspace]\nname = \"w\"\n"))
+            .expect("fixture parses")
+    }
+
+    #[test]
+    fn a_contract_only_template_block_parses_without_provenance() {
+        let manifest = manifest_with_template("contract = 1");
+        manifest
+            .validate()
+            .expect("a hand-built workspace is valid");
+        let block = manifest.template.expect("block");
+        assert!(block.provenance().unwrap().is_none());
+        assert_eq!(block.contract, Some(toml::Value::Integer(1)));
+    }
+
+    #[test]
+    fn a_full_template_block_carries_provenance_and_contract() {
+        let manifest = manifest_with_template(
+            "url = \"u\"\nref = \"v1\"\nsha = \"s\"\napplied = 7\ncontract = 1",
+        );
+        manifest.validate().expect("valid");
+        let block = manifest.template.expect("block");
+        let provenance = block.provenance().unwrap().expect("provenance");
+        assert_eq!(
+            (
+                provenance.url.as_str(),
+                provenance.reference.as_str(),
+                provenance.sha.as_str()
+            ),
+            ("u", "v1", "s")
+        );
+    }
+
+    #[test]
+    fn rejects_partial_template_provenance() {
+        let error = manifest_with_template("url = \"u\"\ncontract = 1")
+            .validate()
+            .expect_err("url without ref and sha");
+        assert!(
+            error.to_string().contains("url, ref and sha together"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn init_refuses_to_record_provenance_into_a_contract_only_block() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(FILENAME),
+            "[template]\ncontract = 1\n\n[workspace]\nname = \"w\"\n",
+        )
+        .unwrap();
+        let error = validate_template(temp.path(), "u", "v1", "s").expect_err("no provenance");
+        assert!(
+            error.to_string().contains("without url, ref and sha"),
+            "{error}"
+        );
+        assert!(recorded_template(temp.path()).unwrap().is_none());
+    }
+
     fn manifest_with_skills(skills_fragment: &str) -> Manifest {
         toml::from_str(&format!(
             "[workspace]\nname = \"w\"\n\
