@@ -1,0 +1,5 @@
+[class.episodic]
+statuses = ["open", "closed", "compacted"]
+
+[kind.ticket]
+class = "episodic"

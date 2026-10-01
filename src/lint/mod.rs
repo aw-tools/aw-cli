@@ -4,17 +4,18 @@
 //! layout reader from a workspace laid out as the template lays it out, and a
 //! test-only reader from a conformance-suite fixture. No rule reads a file.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no rule and no verb reads the model yet")
-)]
-
 mod frontmatter;
 mod layout;
 mod model;
 mod registry;
+mod rules;
+#[cfg(test)]
+mod suite;
 
-use crate::manifest::TemplateBlock;
+use crate::manifest::{Manifest, TemplateBlock};
+use crate::reporting;
+use anyhow::Result;
+use std::path::Path;
 
 /// The conformance-suite revision this `aw` implements. `aw init` records it as
 /// `contract` in the manifest's `[template]` block.
@@ -45,17 +46,43 @@ impl std::error::Error for Refusal {}
 /// Refuse a workspace that names no suite revision, or one this `aw` does not
 /// implement.
 pub fn check_revision(template: Option<&TemplateBlock>) -> Result<(), Refusal> {
-    match template.and_then(|block| block.contract.as_ref()) {
-        None => Err(Refusal::new(format!(
+    let Some(contract) = template.and_then(|block| block.contract.as_ref()) else {
+        return Err(Refusal::new(format!(
             "workspace.toml has no `contract` in its [template] block; replaying the \
              template's changelog adds `contract = {REVISION}` together with `.awlintignore`"
-        ))),
-        Some(toml::Value::Integer(REVISION)) => Ok(()),
-        Some(other) => Err(Refusal::new(format!(
+        )));
+    };
+    recognise(contract)
+}
+
+/// Refuse a declared revision this `aw` does not implement.
+fn recognise(contract: &toml::Value) -> Result<(), Refusal> {
+    match contract {
+        toml::Value::Integer(REVISION) => Ok(()),
+        other => Err(Refusal::new(format!(
             "workspace.toml declares `contract = {other}`, a suite revision this aw does not \
              implement; it implements {REVISION}"
         ))),
     }
+}
+
+/// `aw lint --all`: check every tracked artefact as it stands in the working
+/// tree. Failures go to stdout, the count to stderr. Returns whether there
+/// were none.
+pub fn run_all(root: &Path) -> Result<bool> {
+    let manifest = Manifest::load(root)?;
+    check_revision(manifest.template.as_ref())?;
+    let model = layout::read_worktree(root)?;
+    let findings = rules::check(&model);
+    for finding in &findings {
+        println!(
+            "{}",
+            reporting::lint_finding(&finding.path, &finding.message, finding.rule)
+        );
+    }
+    // No rule warns yet.
+    eprintln!("{}", reporting::lint_count(findings.len(), 0));
+    Ok(findings.is_empty())
 }
 
 #[cfg(test)]

@@ -1,0 +1,8 @@
+[class.standing]
+statuses = ["live", "retired"]
+
+[kind.log]
+class = "standing"
+
+[kind.memo]
+class = "standing"

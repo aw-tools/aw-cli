@@ -1,0 +1,8 @@
+[class.standing]
+statuses = ["live", "retired"]
+
+[class.ephemeral]
+statuses = ["open", "graduated", "expired"]
+
+[kind.handover]
+class = "standing"

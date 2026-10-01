@@ -1,0 +1,4 @@
+[[unit]]
+name = "alpha"
+state = "closed"
+artefacts = ["notes/ticket-alpha.md"]

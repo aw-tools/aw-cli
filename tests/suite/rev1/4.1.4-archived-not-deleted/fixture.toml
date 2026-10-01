@@ -1,0 +1,3 @@
+clause = "4.1.4"
+outcome = "fail"
+artefacts = ["notes/*.md", "archive/notes/*.md"]

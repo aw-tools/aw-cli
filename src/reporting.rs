@@ -515,9 +515,42 @@ pub fn adopt_delivery_model(declared: Option<&str>) -> String {
     }
 }
 
+/// One `aw lint` finding: the file, what is wrong, and the rule's name.
+pub fn lint_finding(path: &str, message: &str, rule: &str) -> String {
+    format!("{path}: {message} [{rule}]")
+}
+
+/// The count closing an `aw lint` run, on stderr.
+pub fn lint_count(failures: usize, warnings: usize) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    format!(
+        "{failures} failure{}, {warnings} warning{}",
+        plural(failures),
+        plural(warnings)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lint_finding_names_the_rule_last() {
+        assert_eq!(
+            lint_finding(
+                "context/STATE.md",
+                "frontmatter has no 'kind'",
+                "kind-missing"
+            ),
+            "context/STATE.md: frontmatter has no 'kind' [kind-missing]"
+        );
+    }
+
+    #[test]
+    fn lint_count_agrees_in_number() {
+        assert_eq!(lint_count(2, 1), "2 failures, 1 warning");
+        assert_eq!(lint_count(1, 0), "1 failure, 0 warnings");
+    }
 
     #[test]
     fn pre_commit_hook_unset_points_at_bootstrap() {

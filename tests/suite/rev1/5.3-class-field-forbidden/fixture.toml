@@ -1,0 +1,3 @@
+clause = "5.3"
+outcome = "fail"
+artefacts = ["notes/*.md"]
