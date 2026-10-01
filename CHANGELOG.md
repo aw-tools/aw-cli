@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `aw init` records `contract = 1` in `workspace.toml`, and a `[template]` block
+  may hold `contract` alone (#51)
+
 ## [0.3.0] - 2026-09-29
 
 ### Added

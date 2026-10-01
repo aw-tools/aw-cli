@@ -133,6 +133,8 @@ fn init_trusts_a_non_default_template_with_the_flag() {
         .success()
         .stderr(predicate::str::contains("Use this template?").not());
     assert!(target.join(".githooks/pre-commit").is_file());
+    let manifest = std::fs::read_to_string(target.join("workspace.toml")).expect("manifest");
+    assert!(manifest.contains("\ncontract = 1\n"), "{manifest}");
 }
 
 // --- adopt: rejection paths -------------------------------------------------
