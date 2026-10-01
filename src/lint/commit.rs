@@ -126,10 +126,18 @@ fn check_disposals(
                     .to_owned(),
             );
         }
-        let archived_to = head
-            .renames
-            .get(&before.path)
-            .filter(|_| EPHEMERAL_TERMINAL.contains(&status));
+        // Git pairs files by similarity, so a graduated artefact's content
+        // carried into a new artefact of another class reads as a rename. That
+        // is its residue, recorded as clause 4.1.2 asks, not an archive.
+        let archived_to = head.renames.get(&before.path).filter(|to| {
+            EPHEMERAL_TERMINAL.contains(&status)
+                && staged
+                    .artefacts
+                    .iter()
+                    .find(|artefact| artefact.path == **to)
+                    .and_then(|artefact| lifecycle(staged, artefact))
+                    .is_none_or(|(class, _)| class == EPHEMERAL || !class_in_contract(class))
+        });
         if let Some(to) = archived_to {
             found(
                 to,
@@ -228,8 +236,14 @@ mod tests {
 [class.ephemeral]
 statuses = [\"open\", \"graduated\", \"expired\"]
 
+[class.binding]
+statuses = [\"active\", \"superseded\"]
+
 [kind.handover]
 class = \"ephemeral\"
+
+[kind.log]
+class = \"binding\"
 ";
 
     /// The rules a commit breaks taking `notes/a.md` from `before`, or from
@@ -275,6 +289,41 @@ class = \"ephemeral\"
     #[test]
     fn an_ephemeral_arriving_terminal_fails() {
         assert_eq!(rules_for(None, "expired"), ["ephemeral-terminal"]);
+    }
+
+    /// The rules a commit breaks when git pairs a graduated `notes/a.md` with
+    /// a new `notes/b.md` of `kind`, as a rename.
+    fn rules_for_rename(kind: &str, status: &str) -> Vec<&'static str> {
+        let registry = RegistryFile::parse(REGISTRY, "registry").unwrap();
+        let note = |path: &str, kind: &str, status: &str| {
+            let text = format!("---\nkind: {kind}\nstatus: {status}\n---\nThe outcome.\n");
+            layout::read(&registry, vec![(path.to_owned(), text)])
+        };
+        let change = Change {
+            staged: note("notes/b.md", kind, status),
+            head: Some(Head {
+                model: note("notes/a.md", "handover", "graduated"),
+                renames: BTreeMap::from([("notes/a.md".to_owned(), "notes/b.md".to_owned())]),
+                deleted: BTreeSet::new(),
+            }),
+        };
+        check(&change)
+            .into_iter()
+            .map(|finding| finding.rule)
+            .collect()
+    }
+
+    #[test]
+    fn residue_carried_into_another_class_is_not_an_archive() {
+        assert!(rules_for_rename("log", "active").is_empty());
+    }
+
+    #[test]
+    fn a_terminal_ephemeral_moved_as_an_ephemeral_is_archived() {
+        assert_eq!(
+            rules_for_rename("handover", "graduated"),
+            ["ephemeral-terminal", "ephemeral-archived"]
+        );
     }
 
     #[test]

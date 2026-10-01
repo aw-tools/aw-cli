@@ -556,6 +556,38 @@ class = \"ephemeral\"
     }
 
     #[test]
+    fn a_head_without_a_readable_registry_gets_no_commit_rules() {
+        for head_registry in [None, Some("[class")] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            git(root, &["init", "--quiet"]);
+            if let Some(text) = head_registry {
+                write(root, REGISTRY, text);
+            }
+            write(
+                root,
+                "context/handover-a.md",
+                "---\nkind: handover\nstatus: open\n---\n",
+            );
+            commit_all(root);
+            write(root, REGISTRY, STAGED_REGISTRY);
+            write(
+                root,
+                "context/handover-a.md",
+                "---\nkind: handover\nstatus: graduated\n---\n",
+            );
+            git(root, &["add", "--all"]);
+            // With no classes at `HEAD`, the commit cannot be shown to record
+            // the terminal state, so the snapshot finding stands.
+            assert_eq!(
+                staged_findings(root),
+                [("context/handover-a.md".to_owned(), "ephemeral-terminal")],
+                "{head_registry:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_registry_only_in_the_working_tree_is_refused() {
         let temp = staged_repository();
         let error = read_staged(temp.path()).err().expect("nothing staged");
