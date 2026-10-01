@@ -21,6 +21,13 @@ pub struct Artefact {
     /// Relative to the workspace root, `/`-separated.
     pub path: String,
     pub header: Header,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the commit rules read the body; no snapshot rule does"
+        )
+    )]
     pub body: String,
 }
 
@@ -52,5 +59,9 @@ pub struct Unit {
     /// Paths of the artefacts belonging to it.
     pub members: Vec<String>,
     /// Units this one names as prerequisites.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the layout rules read it; no contract rule does")
+    )]
     pub depends_on: Vec<String>,
 }

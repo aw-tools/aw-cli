@@ -1,0 +1,4 @@
+clause = "1.1.1"
+outcome = "pass"
+artefacts = ["notes/*.md"]
+revision = 1

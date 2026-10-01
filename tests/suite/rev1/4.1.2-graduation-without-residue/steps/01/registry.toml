@@ -1,0 +1,11 @@
+[class.binding]
+statuses = ["active", "superseded"]
+
+[class.ephemeral]
+statuses = ["open", "graduated", "expired"]
+
+[kind.log]
+class = "binding"
+
+[kind.brief]
+class = "ephemeral"

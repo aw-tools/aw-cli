@@ -1,0 +1,3 @@
+clause = "2.6"
+outcome = "pass"
+artefacts = ["notes/*.md"]

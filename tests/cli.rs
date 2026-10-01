@@ -371,3 +371,81 @@ fn status_reports_a_dead_workspace_hook_without_double_counting() {
         .failure()
         .code(1);
 }
+
+// --- lint -------------------------------------------------------------------
+
+const LINT_REGISTRY: &str = "\
+[class.standing]
+statuses = [\"live\", \"retired\"]
+
+[kind.doctrine]
+class = \"standing\"
+";
+
+/// A git workspace whose manifest carries `template`, holding one tracked
+/// artefact, `context/NOTES.md`, with the given text.
+fn lint_fixture(template: &str, note: &str) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("temp dir");
+    write_manifest(root.path(), "fixture", template);
+    let context = root.path().join("context");
+    std::fs::create_dir(&context).expect("create context");
+    std::fs::write(context.join("artefacts.toml"), LINT_REGISTRY).expect("write registry");
+    std::fs::write(context.join("NOTES.md"), note).expect("write artefact");
+    git_init(root.path());
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["add", "context"])
+        .status()
+        .expect("run git add")
+        .success();
+    assert!(ok, "git add succeeds");
+    root
+}
+
+#[test]
+fn lint_without_a_mode_is_a_usage_error() {
+    aw().arg("lint").assert().failure().code(2);
+}
+
+#[test]
+fn lint_all_passes_a_clean_workspace() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr("0 failures, 0 warnings\n");
+}
+
+#[test]
+fn lint_all_prints_a_finding_and_exits_1() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\nclass: standing\n---\n",
+    );
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .code(1)
+        .stdout(
+            "context/NOTES.md: frontmatter declares 'class', which only the registry gives, \
+             by kind [class-declared]\n",
+        )
+        .stderr("1 failure, 0 warnings\n");
+}
+
+#[test]
+fn lint_all_refuses_a_workspace_declaring_no_revision() {
+    let root = lint_fixture("", "---\nkind: doctrine\nstatus: live\n---\n");
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no `contract`"));
+}

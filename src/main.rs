@@ -114,6 +114,16 @@ enum Verb {
         /// Existing checkout to add.
         path: PathBuf,
     },
+    /// Check the workspace's artefacts against the contract revision
+    /// `workspace.toml` declares. Exits 1 on any failure, 2 when the revision,
+    /// the registry or `.awlintignore` cannot be read.
+    Lint {
+        /// Check every tracked artefact as it stands in the working tree.
+        #[arg(long, required = true)]
+        all: bool,
+        /// Workspace root. Defaults to the nearest ancestor with a manifest.
+        dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -126,8 +136,13 @@ fn main() -> ExitCode {
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("aw: {err:#}");
-            err.downcast_ref::<consent::Refused>()
-                .map_or(ExitCode::FAILURE, |refused| ExitCode::from(refused.code()))
+            if let Some(refused) = err.downcast_ref::<consent::Refused>() {
+                ExitCode::from(refused.code())
+            } else if err.is::<lint::Refusal>() {
+                ExitCode::from(lint::Refusal::CODE)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -166,6 +181,8 @@ fn run() -> Result<bool> {
             dir,
         } => fast_forward::run(&manifest::resolve_root(dir)?, concurrency, dry_run),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
+        // `--all` is required until the staged mode exists.
+        Verb::Lint { all: _, dir } => lint::run_all(&manifest::resolve_root(dir)?),
     }
 }
 

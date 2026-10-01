@@ -1,0 +1,4 @@
+[[unit]]
+name = "alpha"
+state = "open"
+artefacts = ["notes/minute-alpha.md"]

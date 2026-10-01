@@ -10,6 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `aw init` records `contract = 1` in `workspace.toml`, and a `[template]` block
   may hold `contract` alone (#51)
+- `aw lint --all` checks every tracked artefact against the contract, printing
+  each failure with the name of the rule it breaks (#52)
 
 ## [0.3.0] - 2026-09-29
 

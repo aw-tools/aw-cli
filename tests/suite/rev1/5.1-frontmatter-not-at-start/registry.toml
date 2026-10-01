@@ -1,0 +1,5 @@
+[class.ephemeral]
+statuses = ["open", "graduated", "expired"]
+
+[kind.dossier]
+class = "ephemeral"
