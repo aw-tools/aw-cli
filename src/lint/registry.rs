@@ -6,7 +6,7 @@ use super::model::Registry;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct RegistryFile {
     #[serde(default)]
     class: BTreeMap<String, ClassEntry>,

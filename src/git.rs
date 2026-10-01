@@ -5,6 +5,7 @@
 //! work, and matching its behaviour exactly matters more than speed here.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -918,6 +919,141 @@ pub fn per_worktree_git_dir(dir: &Path) -> Result<PathBuf> {
 
 pub fn common_git_dir(dir: &Path) -> Result<PathBuf> {
     resolved_git_path(dir, "--git-common-dir", "common git directory")
+}
+
+/// Whether the repository has a `HEAD` commit; a fresh one has none.
+pub fn has_head(dir: &Path) -> Result<bool> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .output()
+        .context("running `git rev-parse --verify HEAD`")?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => anyhow::bail!(
+            "`git rev-parse --verify HEAD` failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+}
+
+/// The regular files of the index, or of `HEAD` when `head` is set, each path
+/// with its blob id. Submodules, symbolic links and unmerged entries are left
+/// out.
+pub fn blob_ids(dir: &Path, head: bool) -> Result<BTreeMap<String, String>> {
+    let listing = if head {
+        run(dir, &["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?
+    } else {
+        run(dir, &["ls-files", "--stage", "-z"])?
+    };
+    let mut blobs = BTreeMap::new();
+    for entry in listing.split_terminator('\0') {
+        let (meta, path) = entry
+            .split_once('\t')
+            .with_context(|| format!("unexpected git listing entry {entry:?}"))?;
+        // `ls-tree`: mode, type, id. `ls-files --stage`: mode, id, stage.
+        let fields: Vec<&str> = meta.split(' ').collect();
+        let (mode, id, regular) = match fields[..] {
+            [mode, "blob", id] if head => (mode, id, true),
+            [mode, id, "0"] if !head => (mode, id, true),
+            _ => ("", "", false),
+        };
+        if regular && matches!(mode, "100644" | "100755") {
+            blobs.insert(path.to_owned(), id.to_owned());
+        }
+    }
+    Ok(blobs)
+}
+
+/// The contents of each blob, in order, read through one `git cat-file`.
+pub fn read_blobs(dir: &Path, ids: &[&str]) -> Result<Vec<Vec<u8>>> {
+    use std::io::Write as _;
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running `git cat-file --batch`")?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let mut request = ids.join("\n");
+    request.push('\n');
+    // Written from a thread, so a full stdout pipe cannot stall the request.
+    let writer = std::thread::spawn(move || stdin.write_all(request.as_bytes()));
+    let out = child
+        .wait_with_output()
+        .context("reading `git cat-file --batch`")?;
+    writer
+        .join()
+        .expect("the request writer does not panic")
+        .context("writing to `git cat-file --batch`")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "`git cat-file --batch` failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+
+    let mut rest = &out.stdout[..];
+    let mut blobs = Vec::with_capacity(ids.len());
+    for id in ids {
+        let header_end = rest
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .with_context(|| format!("`git cat-file` returned no header for {id}"))?;
+        let header = String::from_utf8_lossy(&rest[..header_end]);
+        let size: usize = match header.split(' ').collect::<Vec<_>>()[..] {
+            [_, "blob", size] => size.parse()?,
+            _ => anyhow::bail!("`git cat-file` could not read blob {id}: {header}"),
+        };
+        let body = header_end + 1;
+        anyhow::ensure!(
+            rest.len() > body + size,
+            "`git cat-file` cut blob {id} short"
+        );
+        blobs.push(rest[body..body + size].to_vec());
+        rest = &rest[body + size + 1..];
+    }
+    Ok(blobs)
+}
+
+/// The files the index renames from `HEAD`, each old path to its new one.
+pub fn staged_renames(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let listing = run(
+        dir,
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--find-renames",
+            "--name-status",
+            "-z",
+            "HEAD",
+            "--",
+        ],
+    )?;
+    let mut fields = listing.split_terminator('\0');
+    let mut renames = BTreeMap::new();
+    while let Some(status) = fields.next() {
+        let path = fields
+            .next()
+            .with_context(|| format!("`git diff` gave status {status} no path"))?;
+        if status.starts_with('R') {
+            let to = fields
+                .next()
+                .with_context(|| format!("`git diff` gave rename of {path} no target"))?;
+            renames.insert(path.to_owned(), to.to_owned());
+        }
+    }
+    Ok(renames)
 }
 
 fn resolved_git_path(dir: &Path, option: &str, description: &str) -> Result<PathBuf> {

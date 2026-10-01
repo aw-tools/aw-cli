@@ -404,8 +404,69 @@ fn lint_fixture(template: &str, note: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn lint_without_a_mode_is_a_usage_error() {
-    aw().arg("lint").assert().failure().code(2);
+fn lint_checks_the_staged_file_not_the_working_tree() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\nclass: standing\n---\n",
+    );
+    std::fs::write(
+        root.path().join("context/NOTES.md"),
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    )
+    .expect("fix the working tree only");
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[class-declared]"))
+        .stderr("1 failure, 0 warnings\n");
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn lint_passes_a_clean_commit_on_top_of_head() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} succeeds");
+    };
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        "seed",
+    ]);
+    std::fs::write(
+        root.path().join("context/NOTES.md"),
+        "---\nkind: doctrine\nstatus: live\n---\nA note.\n",
+    )
+    .expect("edit the artefact");
+    git(&["add", "context"]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr("0 failures, 0 warnings\n");
 }
 
 #[test]

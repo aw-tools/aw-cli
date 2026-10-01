@@ -65,7 +65,7 @@ so both must be on your `PATH`. `aw doctor` reports what is missing.
 | `aw sync`         | Fetch the workspace layer and every managed repository, report change            |
 | `aw fast-forward` | Fetch, then fast-forward each clean repository on its default branch; alias `ff` |
 | `aw adopt`        | Add an existing checkout to the workspace manifest                               |
-| `aw lint --all`   | Check every tracked artefact against the declared contract revision              |
+| `aw lint`         | Check the pending commit, or `--all` artefacts, against the contract             |
 
 `aw --help` and `aw <command> --help` describe each option.
 
