@@ -520,6 +520,11 @@ pub fn lint_finding(path: &str, message: &str, rule: &str) -> String {
     format!("{path}: {message} [{rule}]")
 }
 
+/// A finding that does not fail the run, on stderr.
+pub fn lint_warning(finding: &str) -> String {
+    format!("warning: {finding}")
+}
+
 /// The count closing an `aw lint` run, on stderr.
 pub fn lint_count(failures: usize, warnings: usize) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
@@ -543,6 +548,14 @@ mod tests {
                 "kind-missing"
             ),
             "context/STATE.md: frontmatter has no 'kind' [kind-missing]"
+        );
+    }
+
+    #[test]
+    fn lint_warning_prefixes_the_finding() {
+        assert_eq!(
+            lint_warning("context/a.md: still open [ephemeral-open]"),
+            "warning: context/a.md: still open [ephemeral-open]"
         );
     }
 

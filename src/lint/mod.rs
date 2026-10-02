@@ -10,6 +10,7 @@ mod commit;
 mod frontmatter;
 mod layout;
 mod model;
+mod placement;
 mod registry;
 mod rule;
 mod rules;
@@ -20,6 +21,7 @@ mod tree;
 use crate::manifest::{Manifest, TemplateBlock};
 use crate::reporting;
 use anyhow::Result;
+use rule::Severity;
 use std::path::Path;
 
 /// The conformance-suite revision this `aw` implements. `aw init` records it as
@@ -76,28 +78,41 @@ fn recognise(contract: &toml::Value) -> Result<(), Refusal> {
 /// were none.
 pub fn run_all(root: &Path) -> Result<bool> {
     check_revision(Manifest::load(root)?.template.as_ref())?;
-    Ok(report(&rules::check(&layout::read_worktree(root)?)))
+    let model = layout::read_worktree(root)?;
+    let mut findings = rules::check(&model);
+    findings.extend(placement::check(&model));
+    Ok(report(&findings))
 }
 
 /// `aw lint`: check the staged tree, and what it changes from `HEAD`. A
 /// repository with no `HEAD` gets the snapshot rules alone.
 pub fn run_staged(root: &Path) -> Result<bool> {
     check_revision(Manifest::load(root)?.template.as_ref())?;
-    Ok(report(&commit::check(&layout::read_staged(root)?)))
+    let change = layout::read_staged(root)?;
+    let mut findings = commit::check(&change);
+    findings.extend(placement::check(&change.staged));
+    Ok(report(&findings))
 }
 
-/// Print each finding to stdout and the count to stderr; whether there were
-/// none.
+/// Print each failure to stdout, each warning and the count to stderr; whether
+/// there were no failures.
 fn report(findings: &[rules::Finding]) -> bool {
+    let (mut failures, mut warnings) = (0, 0);
     for finding in findings {
-        println!(
-            "{}",
-            reporting::lint_finding(&finding.path, &finding.message, finding.rule.name())
-        );
+        let line = reporting::lint_finding(&finding.path, &finding.message, finding.rule.name());
+        match finding.rule.severity() {
+            Severity::Failure => {
+                failures += 1;
+                println!("{line}");
+            }
+            Severity::Warning => {
+                warnings += 1;
+                eprintln!("{}", reporting::lint_warning(&line));
+            }
+        }
     }
-    // No rule warns yet.
-    eprintln!("{}", reporting::lint_count(findings.len(), 0));
-    findings.is_empty()
+    eprintln!("{}", reporting::lint_count(failures, warnings));
+    failures == 0
 }
 
 #[cfg(test)]
@@ -108,6 +123,20 @@ mod tests {
         let manifest: crate::manifest::Manifest =
             toml::from_str(&format!("{fragment}\n[workspace]\nname = \"fixture\"\n")).unwrap();
         manifest.template
+    }
+
+    #[test]
+    fn warnings_never_fail_the_run() {
+        let finding = |rule: rule::Rule| rules::Finding {
+            path: "context/a.md".to_owned(),
+            message: "m".to_owned(),
+            rule,
+        };
+        assert!(report(&[finding(rule::Rule::EphemeralOpen)]));
+        assert!(!report(&[
+            finding(rule::Rule::EphemeralOpen),
+            finding(rule::Rule::KindPrefix)
+        ]));
     }
 
     #[test]

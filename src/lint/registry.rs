@@ -28,6 +28,7 @@ struct ClassEntry {
 #[derive(Deserialize)]
 struct KindEntry {
     class: String,
+    home: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +57,25 @@ impl RegistryFile {
                 .collect(),
         }
     }
+
+    /// Kind name to the directory its artefacts sit in, for each kind that
+    /// names one.
+    pub fn homes(&self) -> BTreeMap<String, String> {
+        self.kind
+            .iter()
+            .filter_map(|(name, entry)| Some((name.clone(), entry.home.clone()?)))
+            .collect()
+    }
+
+    /// The declared subdirectories marked `tracked = true`: the ones a topic
+    /// may hold in a tracked path.
+    pub fn tracked_subdirectories(&self) -> Vec<String> {
+        self.subdirectory
+            .iter()
+            .filter(|(_, entry)| entry.get("tracked").and_then(toml::Value::as_bool) == Some(true))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +93,18 @@ mod tests {
         let registry = file.registry();
         assert_eq!(registry.classes["episodic"], ["open", "closed"]);
         assert_eq!(registry.kinds["ticket"], "episodic");
+        assert_eq!(file.homes()["ticket"], "notes");
+    }
+
+    #[test]
+    fn only_subdirectories_marked_tracked_are_tracked() {
+        let file = RegistryFile::parse(
+            "[subdirectory.attachments]\ntracked = true\n\n\
+             [subdirectory.tmp]\ntracked = false\n\n[subdirectory.loose]\n",
+            "registry.toml",
+        )
+        .unwrap();
+        assert_eq!(file.tracked_subdirectories(), ["attachments"]);
     }
 
     #[test]
