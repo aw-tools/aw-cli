@@ -2,9 +2,9 @@
 //! declared subdirectories and the engagement register.
 
 use super::Refusal;
-use super::model::Registry;
+use super::model::{Caps, Registry};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Deserialize, Default)]
 pub struct RegistryFile {
@@ -18,6 +18,8 @@ pub struct RegistryFile {
     pub subdirectory: BTreeMap<String, toml::Table>,
     #[serde(default)]
     pub engagements: BTreeMap<String, EngagementEntry>,
+    /// The house style's numbers; the table's presence opens its gate.
+    pub state: Option<Caps>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +38,10 @@ pub struct EngagementEntry {
     pub status: String,
     #[serde(default, rename = "depends-on")]
     pub depends_on: Vec<String>,
+    /// `None` when the key is absent, which differs from an empty list.
+    pub remits: Option<Vec<String>>,
+    /// `active` unless the registry says otherwise.
+    pub activity: Option<String>,
 }
 
 impl RegistryFile {
@@ -74,6 +80,14 @@ impl RegistryFile {
             .iter()
             .filter(|(_, entry)| entry.get("tracked").and_then(toml::Value::as_bool) == Some(true))
             .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Every remit any engagement lists.
+    pub fn remit_values(&self) -> BTreeSet<String> {
+        self.engagements
+            .values()
+            .flat_map(|entry| entry.remits.iter().flatten().cloned())
             .collect()
     }
 }

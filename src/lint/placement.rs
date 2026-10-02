@@ -337,6 +337,10 @@ status = \"closed\"
             subdirectories: registry.tracked_subdirectories(),
             topic_paths,
             untracked: untracked.iter().map(|path| (*path).to_owned()).collect(),
+            state: None,
+            remits: std::collections::BTreeMap::new(),
+            dormant: BTreeSet::new(),
+            prior_remits: None,
         });
         check(&model)
             .into_iter()

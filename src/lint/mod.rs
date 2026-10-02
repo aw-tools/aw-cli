@@ -14,6 +14,7 @@ mod placement;
 mod registry;
 mod rule;
 mod rules;
+mod style;
 #[cfg(test)]
 mod suite;
 mod tree;
@@ -21,7 +22,7 @@ mod tree;
 use crate::manifest::{Manifest, TemplateBlock};
 use crate::reporting;
 use anyhow::Result;
-use rule::Severity;
+use rule::{Severity, Tier};
 use std::path::Path;
 
 /// The conformance-suite revision this `aw` implements. `aw init` records it as
@@ -81,7 +82,8 @@ pub fn run_all(root: &Path) -> Result<bool> {
     let model = layout::read_worktree(root)?;
     let mut findings = rules::check(&model);
     findings.extend(placement::check(&model));
-    Ok(report(&findings))
+    findings.extend(style::check(&model, style::today()));
+    Ok(report(&gated(findings, &model)))
 }
 
 /// `aw lint`: check the staged tree, and what it changes from `HEAD`. A
@@ -91,7 +93,30 @@ pub fn run_staged(root: &Path) -> Result<bool> {
     let change = layout::read_staged(root)?;
     let mut findings = commit::check(&change);
     findings.extend(placement::check(&change.staged));
-    Ok(report(&findings))
+    findings.extend(style::check(&change.staged, style::today()));
+    Ok(report(&gated(findings, &change.staged)))
+}
+
+/// `aw lint --remits`: list the engagements by remit on stdout, from the
+/// registry in the working tree; with `filter`, only that remit.
+pub fn run_remits(root: &Path, filter: Option<&str>) -> Result<bool> {
+    check_revision(Manifest::load(root)?.template.as_ref())?;
+    let registry = layout::read_registry(root)?;
+    for line in style::remits(&registry, |dir| root.join(dir).is_dir(), filter) {
+        println!("{line}");
+    }
+    Ok(true)
+}
+
+/// Drop the house style's findings unless the registry carries a `[state]`
+/// table.
+fn gated(mut findings: Vec<rules::Finding>, model: &model::Model) -> Vec<rules::Finding> {
+    let open = model
+        .layout
+        .as_ref()
+        .is_some_and(|layout| layout.state.is_some());
+    findings.retain(|finding| open || finding.rule.tier() != Tier::HouseStyle);
+    findings
 }
 
 /// Print each failure to stdout, each warning and the count to stderr; whether
@@ -137,6 +162,40 @@ mod tests {
             finding(rule::Rule::EphemeralOpen),
             finding(rule::Rule::KindPrefix)
         ]));
+    }
+
+    #[test]
+    fn the_house_style_counts_only_behind_a_state_table() {
+        let kept = |registry: &str| {
+            let registry = registry::RegistryFile::parse(registry, "registry").unwrap();
+            let mut model = layout::read(&registry, Vec::new());
+            model.layout = Some(model::Layout {
+                homes: std::collections::BTreeMap::new(),
+                subdirectories: Vec::new(),
+                topic_paths: Vec::new(),
+                untracked: Vec::new(),
+                state: registry.state,
+                remits: std::collections::BTreeMap::new(),
+                dormant: std::collections::BTreeSet::new(),
+                prior_remits: None,
+            });
+            let findings = [rule::Rule::KindPrefix, rule::Rule::RemitsMissing]
+                .map(|rule| rules::Finding {
+                    path: "context/a.md".to_owned(),
+                    message: "m".to_owned(),
+                    rule,
+                })
+                .into();
+            gated(findings, &model)
+                .into_iter()
+                .map(|finding| finding.rule)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kept(""), [rule::Rule::KindPrefix]);
+        assert_eq!(
+            kept("[state]\n"),
+            [rule::Rule::KindPrefix, rule::Rule::RemitsMissing]
+        );
     }
 
     #[test]

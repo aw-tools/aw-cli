@@ -25,6 +25,9 @@ pub const ENGAGEMENTS: &str = "context/engagements";
 /// Where a closed engagement's topic directory sits.
 pub const ARCHIVE: &str = "context/archive";
 const TOPIC_TREES: [&str; 2] = [ENGAGEMENTS, ARCHIVE];
+/// The engagement activity that takes a roll-up line in `STATE.md` instead of
+/// an item.
+pub const DORMANT: &str = "dormant";
 
 /// Which tracked paths are artefacts.
 pub struct Scope {
@@ -70,9 +73,7 @@ impl Scope {
 /// Build the model from the tracked `*.md` files in the working tree, as
 /// `aw lint --all` reads them.
 pub fn read_worktree(root: &Path) -> Result<Model> {
-    let registry_text = std::fs::read_to_string(root.join(REGISTRY))
-        .map_err(|err| Refusal::new(format!("{REGISTRY}: {err}")))?;
-    let registry = RegistryFile::parse(&registry_text, REGISTRY)?;
+    let registry = read_registry(root)?;
     let ignore = match std::fs::read_to_string(root.join(IGNORE_FILE)) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == ErrorKind::NotFound => None,
@@ -104,6 +105,13 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
     let mut model = read(&registry, files);
     model.layout = Some(layout(root, &registry, topic_paths)?);
     Ok(model)
+}
+
+/// The registry as it stands in the working tree.
+pub fn read_registry(root: &Path) -> Result<RegistryFile, Refusal> {
+    let text = std::fs::read_to_string(root.join(REGISTRY))
+        .map_err(|err| Refusal::new(format!("{REGISTRY}: {err}")))?;
+    RegistryFile::parse(&text, REGISTRY)
 }
 
 /// Build the model of the staged tree, and of `HEAD` with what the commit
@@ -140,6 +148,9 @@ pub fn read_staged(root: &Path) -> Result<Change> {
         .text(REGISTRY)?
         .and_then(|text| RegistryFile::parse(&text, REGISTRY).ok())
         .unwrap_or_default();
+    if let Some(layout) = &mut staged.layout {
+        layout.prior_remits = Some(head_registry.remit_values());
+    }
     let model = read(
         &head_registry,
         head.texts(head.paths().filter(|path| scope.admits(path)))?,
@@ -221,6 +232,19 @@ fn layout(root: &Path, registry: &RegistryFile, topic_paths: Vec<String>) -> Res
         subdirectories: registry.tracked_subdirectories(),
         topic_paths,
         untracked,
+        state: registry.state,
+        remits: registry
+            .engagements
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.remits.clone()))
+            .collect(),
+        dormant: registry
+            .engagements
+            .iter()
+            .filter(|(_, entry)| entry.activity.as_deref() == Some(DORMANT))
+            .map(|(name, _)| name.clone())
+            .collect(),
+        prior_remits: None,
     })
 }
 

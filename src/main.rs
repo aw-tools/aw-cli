@@ -122,6 +122,15 @@ enum Verb {
         /// Check every tracked artefact as it stands in the working tree.
         #[arg(long)]
         all: bool,
+        /// List the engagements by remit instead, tab-separated: remit,
+        /// engagement, status, activity, directory. With a remit, only that
+        /// one; a workspace root then goes before the flag.
+        #[arg(long, value_name = "REMIT", num_args = 0..=1, conflicts_with = "all")]
+        #[expect(
+            clippy::option_option,
+            reason = "the flag is absent, bare or given a remit, as clap reads it"
+        )]
+        remits: Option<Option<String>>,
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
@@ -182,9 +191,11 @@ fn run() -> Result<bool> {
             dir,
         } => fast_forward::run(&manifest::resolve_root(dir)?, concurrency, dry_run),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
-        Verb::Lint { all, dir } => {
+        Verb::Lint { all, remits, dir } => {
             let root = manifest::resolve_root(dir)?;
-            if all {
+            if let Some(filter) = remits {
+                lint::run_remits(&root, filter.as_deref())
+            } else if all {
                 lint::run_all(&root)
             } else {
                 lint::run_staged(&root)
