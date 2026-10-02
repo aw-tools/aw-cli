@@ -16,6 +16,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   edited decision, or a finished note deleted without its outcome (#53)
 - `aw lint` checks where each file sits and what it is named, and warns about
   open reports and untracked notes (#55)
+- `aw lint` checks the house style when the registry has a `[state]` table, and
+  `aw lint --remits` lists engagements by remit (#56)
 
 ## [0.3.0] - 2026-09-29
 
