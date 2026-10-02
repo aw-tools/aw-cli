@@ -31,6 +31,15 @@ impl<'a> Tree<'a> {
         self.blobs.keys().map(String::as_str)
     }
 
+    /// The paths this tree adds, or holds with other contents than `base`.
+    pub fn changed_from(&self, base: &Tree) -> BTreeSet<String> {
+        self.blobs
+            .iter()
+            .filter(|(path, id)| base.blobs.get(*path) != Some(*id))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// One file's text, if the tree holds it.
     pub fn text(&self, path: &str) -> Result<Option<String>> {
         Ok(self.texts([path])?.pop().map(|(_, text)| text))

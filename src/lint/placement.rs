@@ -104,7 +104,15 @@ fn check_artefact(
             ),
         },
     }
-    if class == EPHEMERAL && declared(artefact, "status") == Some(OPEN) {
+    // A commit hears only of the open ephemerals it stages, as the script's
+    // staged file list gives it; `--all` lists every one.
+    if class == EPHEMERAL
+        && declared(artefact, "status") == Some(OPEN)
+        && layout
+            .staged
+            .as_ref()
+            .is_none_or(|staged| staged.contains(path))
+    {
         found(
             path,
             Rule::EphemeralOpen,

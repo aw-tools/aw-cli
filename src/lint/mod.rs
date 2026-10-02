@@ -29,15 +29,26 @@ use std::path::Path;
 /// `contract` in the manifest's `[template]` block.
 pub const REVISION: i64 = 1;
 
-/// An input `aw lint` cannot run against: a missing or unknown revision, or an
-/// unreadable registry or ignore file. It exits with [`Refusal::CODE`], apart
-/// from findings, which exit 1.
+/// An input `aw lint` cannot run against: a missing or unknown revision, an
+/// unreadable registry or ignore file, or any other error that stops the
+/// check before it reports. It exits with [`Refusal::CODE`], apart from
+/// findings, which exit 1.
 #[derive(Debug)]
 pub struct Refusal(String);
 
 impl Refusal {
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
+    }
+
+    /// `err` as a refusal, its message kept: an unparseable `workspace.toml`
+    /// or a root outside git stops the check as surely as a missing revision.
+    pub fn from_error(err: anyhow::Error) -> anyhow::Error {
+        if err.is::<Self>() {
+            err
+        } else {
+            Self::new(format!("{err:#}")).into()
+        }
     }
 
     pub const CODE: u8 = 2;

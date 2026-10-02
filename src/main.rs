@@ -117,7 +117,7 @@ enum Verb {
     /// Check the workspace's artefacts against the contract revision
     /// `workspace.toml` declares: the staged tree and what it changes from
     /// `HEAD`, or with `--all` the working tree. Exits 1 on any failure, 2 when
-    /// the revision, the registry or `.awlintignore` cannot be read.
+    /// the check cannot run.
     Lint {
         /// Check every tracked artefact as it stands in the working tree.
         #[arg(long)]
@@ -192,14 +192,18 @@ fn run() -> Result<bool> {
         } => fast_forward::run(&manifest::resolve_root(dir)?, concurrency, dry_run),
         Verb::Adopt { path } => adopt::run(&path).map(|()| true),
         Verb::Lint { all, remits, dir } => {
-            let root = manifest::resolve_root(dir)?;
-            if let Some(filter) = remits {
-                lint::run_remits(&root, filter.as_deref())
-            } else if all {
-                lint::run_all(&root)
-            } else {
-                lint::run_staged(&root)
-            }
+            let lint = || {
+                let root = manifest::resolve_root(dir)?;
+                if let Some(filter) = remits {
+                    lint::run_remits(&root, filter.as_deref())
+                } else if all {
+                    lint::run_all(&root)
+                } else {
+                    lint::run_staged(&root)
+                }
+            };
+            // Findings come back as `Ok(false)`; an error means no check ran.
+            lint().map_err(lint::Refusal::from_error)
         }
     }
 }
