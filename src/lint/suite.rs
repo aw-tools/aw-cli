@@ -9,6 +9,7 @@
 
 use super::model::{Change, Head, Model, Unit};
 use super::registry::RegistryFile;
+use super::rule::Rule;
 use super::tree::{self, Tree};
 use super::{Refusal, commit, layout, rules};
 use ignore::gitignore::GitignoreBuilder;
@@ -193,32 +194,6 @@ fn verdict(fixture: &Fixture) -> Result<Vec<rules::Finding>, Refusal> {
     Ok(commit::check(&fixture.change))
 }
 
-/// The clauses a rule enforces, so a failing fixture is known to fail for its
-/// own clause and not by accident.
-fn clauses(rule: &str) -> &'static [&'static str] {
-    match rule {
-        "frontmatter-missing" => &["5.1", "5.2"],
-        "frontmatter-unclosed" => &["5.2"],
-        "class-declared" => &["2.2", "5.3"],
-        "kind-missing" | "status-missing" => &["2.1"],
-        "kind-unregistered" => &["2.4"],
-        "class-undeclared" => &["2.3"],
-        "status-unknown" => &["3.1"],
-        "status-foreign" => &["3.1", "3.2"],
-        "successor-missing" => &["3.7"],
-        "ephemeral-terminal" => &["4.1.1"],
-        "unit-undeclared" => &["4.2.1"],
-        "open-in-closed-unit" => &["4.2.3"],
-        "compacted-empty" => &["4.2.4"],
-        "status-skipped" | "status-backwards" => &["3.3"],
-        "binding-rewritten" => &["3.6"],
-        "residue-missing" => &["4.1.2"],
-        "ephemeral-archived" => &["4.1.4"],
-        "close-with-unit" => &["4.2.2"],
-        other => panic!("rule {other} cites no clause"),
-    }
-}
-
 fn suite() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/suite/rev1")
 }
@@ -251,7 +226,7 @@ fn every_fixture_reaches_its_verdict() {
             // registry's class for that kind does not allow.
             ("fail", Ok(findings)) => findings
                 .iter()
-                .any(|f| clause == "2.5" || clauses(f.rule).contains(&clause)),
+                .any(|f| clause == "2.5" || f.rule.clauses().contains(&clause)),
             _ => false,
         };
         if !correct {
@@ -260,7 +235,7 @@ fn every_fixture_reaches_its_verdict() {
                 Ok(findings) if findings.is_empty() => "no findings".to_owned(),
                 Ok(findings) => findings
                     .iter()
-                    .map(|f| format!("{}: {} [{}]", f.path, f.message, f.rule))
+                    .map(|f| format!("{}: {} [{}]", f.path, f.message, f.rule.name()))
                     .collect::<Vec<_>>()
                     .join("; "),
             };
@@ -271,6 +246,30 @@ fn every_fixture_reaches_its_verdict() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn every_cited_clause_has_a_failing_fixture() {
+    let failing: Vec<String> = std::fs::read_dir(suite())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|dir| {
+            let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
+            file.outcome == "fail"
+        })
+        .map(|dir| dir.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    for &rule in Rule::ALL {
+        for clause in rule.clauses() {
+            assert!(
+                failing
+                    .iter()
+                    .any(|name| name.starts_with(&format!("{clause}-"))),
+                "{} cites {clause}, which has no failing fixture",
+                rule.name()
+            );
+        }
+    }
 }
 
 #[test]
