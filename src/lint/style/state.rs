@@ -1,128 +1,16 @@
-//! The house style: every engagement's remits, and the shape of `STATE.md`.
-//!
-//! These rules are the workspace's own conventions, beyond the contract and the
-//! template's layout. They run only on a model read from the template's layout,
-//! and their findings count only when the registry carries a `[state]` table.
+//! The shape of `STATE.md`, read line by line as the script's awk reads it.
 
-use super::layout::{ARCHIVE, ENGAGEMENTS, REGISTRY};
-use super::model::{Caps, Layout, Model};
-use super::registry::RegistryFile;
-use super::rule::Rule;
-use super::rules::{Finding, OPEN};
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use super::day_number;
+use crate::lint::model::{Caps, Layout, Model};
+use crate::lint::rule::Rule;
+use crate::lint::rules::OPEN;
+use std::collections::BTreeSet;
 
-/// The handover file the shape rules read.
-const STATE: &str = "context/STATE.md";
 const NEXT: &str = "Next";
 const OPEN_ITEMS: &str = "Open items";
 const DORMANT_ENGAGEMENTS: &str = "Dormant engagements";
 /// The slug prefix marking an item whose subject has no engagement.
 const NO_TOPIC: &str = "item-";
-/// The day number of 1970-01-01, the epoch `today` counts from.
-const EPOCH_DAY: i64 = 2_440_588;
-
-/// Every house-style finding in the model, or none when it was not read from
-/// the template's layout. `today` is a day number, as [`today`] gives it.
-pub fn check(model: &Model, today: i64) -> Vec<Finding> {
-    let Some(layout) = &model.layout else {
-        return Vec::new();
-    };
-    let mut findings = Vec::new();
-    let mut found = |path: &str, rule: Rule, message: String| {
-        findings.push(Finding {
-            path: path.to_owned(),
-            message,
-            rule,
-        });
-    };
-    check_remits(layout, &mut found);
-    if let Some(state) = model
-        .artefacts
-        .iter()
-        .find(|artefact| artefact.path == STATE)
-    {
-        let caps = layout.state.unwrap_or_default();
-        for (rule, message) in Shape::check(&state.body, model, layout, caps, today) {
-            found(STATE, rule, message);
-        }
-    }
-    findings
-}
-
-/// Today's day number in UTC.
-pub fn today() -> i64 {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() / 86_400);
-    EPOCH_DAY + i64::try_from(days).unwrap_or(0)
-}
-
-/// Each engagement lists its remits, each kebab-case and once; and, in a
-/// commit, a remit the register has not held before is pointed out.
-fn check_remits(layout: &Layout, found: &mut impl FnMut(&str, Rule, String)) {
-    for (name, remits) in &layout.remits {
-        let Some(remits) = remits else {
-            found(
-                REGISTRY,
-                Rule::RemitsMissing,
-                format!("engagement '{name}' has no remits key (required; [] means none)"),
-            );
-            continue;
-        };
-        let mut seen = BTreeMap::new();
-        for remit in remits {
-            if !kebab_case(remit) {
-                found(
-                    REGISTRY,
-                    Rule::RemitMalformed,
-                    format!("engagement '{name}' remit '{remit}' is not kebab-case"),
-                );
-            }
-            let count = seen.entry(remit).or_insert(0);
-            *count += 1;
-            // Once per remit, however often it repeats, as the script does.
-            if *count == 2 {
-                found(
-                    REGISTRY,
-                    Rule::RemitRepeated,
-                    format!("engagement '{name}' lists remit '{remit}' twice"),
-                );
-            }
-        }
-    }
-    let Some(prior) = &layout.prior_remits else {
-        return;
-    };
-    let existing = if prior.is_empty() {
-        "none".to_owned()
-    } else {
-        prior
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let current: BTreeSet<&String> = layout.remits.values().flatten().flatten().collect();
-    for remit in current.into_iter().filter(|remit| !prior.contains(*remit)) {
-        found(
-            REGISTRY,
-            Rule::RemitNew,
-            format!(
-                "remit '{remit}' appears for the first time in the register (existing: {existing})"
-            ),
-        );
-    }
-}
-
-fn kebab_case(value: &str) -> bool {
-    value.split('-').all(|word| {
-        !word.is_empty()
-            && word
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    })
-}
 
 /// Which `STATE.md` section a line sits in.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -162,7 +50,7 @@ enum Event<'a> {
 }
 
 /// One pass over `STATE.md`, line by line as the script's awk reads it.
-struct Shape<'a> {
+pub(super) struct Shape<'a> {
     model: &'a Model,
     layout: &'a Layout,
     caps: Caps,
@@ -180,7 +68,7 @@ struct Shape<'a> {
 }
 
 impl<'a> Shape<'a> {
-    fn check(
+    pub(super) fn check(
         text: &'a str,
         model: &'a Model,
         layout: &'a Layout,
@@ -565,157 +453,11 @@ fn tokens(line: &str) -> impl Iterator<Item = &str> {
     line.split([' ', '\t']).filter(|word| !word.is_empty())
 }
 
-/// The day number of a `YYYY-MM-DD` date, by the script's arithmetic; `None`
-/// for any other shape.
-fn day_number(date: &str) -> Option<i64> {
-    let bytes = date.as_bytes();
-    let shaped = bytes.len() == 10
-        && bytes.iter().enumerate().all(|(index, byte)| match index {
-            4 | 7 => *byte == b'-',
-            _ => byte.is_ascii_digit(),
-        });
-    if !shaped {
-        return None;
-    }
-    let part = |range: std::ops::Range<usize>| date[range].parse::<i64>().ok();
-    let (year, month, day) = (part(0..4)?, part(5..7)?, part(8..10)?);
-    let a = (14 - month) / 12;
-    let y = year + 4800 - a;
-    let m = month + 12 * a - 3;
-    Some(day + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32_045)
-}
-
-/// `aw lint --remits`: one tab-separated line per remit an engagement lists,
-/// giving the remit, the engagement, its status and activity, and its directory
-/// if it sits where its status puts it, else `-`. An engagement listing no
-/// remit appears under `-`; one with no `remits` key not at all. Sorted
-/// bytewise; with `filter`, only that remit's lines.
-pub fn remits(
-    registry: &RegistryFile,
-    is_dir: impl Fn(&str) -> bool,
-    filter: Option<&str>,
-) -> Vec<String> {
-    let none = ["-".to_owned()];
-    let mut lines = Vec::new();
-    for (name, entry) in &registry.engagements {
-        let Some(remits) = &entry.remits else {
-            continue;
-        };
-        let status = entry.status.as_str();
-        let activity = entry.activity.as_deref().unwrap_or("active");
-        let tree = if status == OPEN { ENGAGEMENTS } else { ARCHIVE };
-        let directory = format!("{tree}/{name}");
-        let directory = if is_dir(&directory) {
-            directory.as_str()
-        } else {
-            "-"
-        };
-        let remits = if remits.is_empty() { &none[..] } else { remits };
-        for remit in remits {
-            lines.push(format!(
-                "{remit}\t{name}\t{status}\t{activity}\t{directory}"
-            ));
-        }
-    }
-    lines.sort();
-    if let Some(filter) = filter.filter(|filter| !filter.is_empty()) {
-        lines.retain(|line| line.split('\t').next() == Some(filter));
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{CLEAN, REGISTRY_TEXT, findings, findings_in};
     use super::*;
-    use crate::lint::layout;
     use crate::lint::rule::Severity;
-
-    const REGISTRY_TEXT: &str = "\
-[class.standing]
-statuses = [\"live\", \"retired\"]
-
-[kind.state]
-class = \"standing\"
-
-[state]
-max_items = 3
-next_entries = 2
-
-[engagements.alpha]
-status = \"open\"
-remits = [\"build\"]
-
-[engagements.beta]
-status = \"closed\"
-remits = []
-
-[engagements.gamma]
-status = \"open\"
-activity = \"dormant\"
-remits = [\"operations\"]
-";
-
-    /// A `STATE.md` clean under every house-style rule on `today`.
-    const CLEAN: &str = "\
-# State
-
-## 1. Next
-
-1. alpha
-2. item-misc — with a note
-   carried on
-
-## 2. Open items
-
-### alpha (2026-09-02)
-
-- Now: one two
-  three
-- Next: four
-- Blocked: —
-- Ledger: ledger-a.md
-
-### item-misc (2026-10-01)
-
-- Now: x
-- Next: y
-- Blocked: z
-- Ledger: —
-
-## 3. Dormant engagements
-
-- gamma: resting until
-  the spring.
-";
-
-    fn today() -> i64 {
-        day_number("2026-10-02").unwrap()
-    }
-
-    /// The house-style findings for `state` as `STATE.md` under `registry`,
-    /// with `prior` as `HEAD`'s remits.
-    fn findings_in(registry: &str, state: &str, prior: Option<&[&str]>) -> Vec<(Rule, String)> {
-        let registry = RegistryFile::parse(registry, "registry").unwrap();
-        let mut model = layout::read(
-            &registry,
-            vec![(
-                STATE.to_owned(),
-                format!("---\nkind: state\nstatus: live\n---\n{state}"),
-            )],
-        );
-        let mut layout = layout::declared(&registry);
-        layout.prior_remits =
-            prior.map(|remits| remits.iter().map(|remit| (*remit).to_owned()).collect());
-        model.layout = Some(layout);
-        check(&model, today())
-            .into_iter()
-            .map(|finding| (finding.rule, finding.message))
-            .collect()
-    }
-
-    fn findings(state: &str) -> Vec<(Rule, String)> {
-        findings_in(REGISTRY_TEXT, state, None)
-    }
 
     fn rules(state: &str) -> Vec<Rule> {
         findings(state).into_iter().map(|(rule, _)| rule).collect()
@@ -736,90 +478,6 @@ remits = [\"operations\"]
                  ## 3. Dormant"
             ),
         )
-    }
-
-    #[test]
-    fn the_house_style_is_clean() {
-        assert_eq!(findings(CLEAN), []);
-    }
-
-    #[test]
-    fn a_model_read_from_no_layout_gets_no_house_style_rules() {
-        let registry = RegistryFile::parse(REGISTRY_TEXT, "registry").unwrap();
-        let model = layout::read(&registry, vec![(STATE.to_owned(), "```\n".to_owned())]);
-        assert!(check(&model, today()).is_empty());
-    }
-
-    #[test]
-    fn without_a_state_file_only_the_remits_are_checked() {
-        let registry =
-            RegistryFile::parse(&REGISTRY_TEXT.replace("remits = []\n", ""), "registry").unwrap();
-        let mut model = layout::read(&registry, Vec::new());
-        model.layout = Some(layout::declared(&registry));
-        let rules: Vec<Rule> = check(&model, today()).iter().map(|f| f.rule).collect();
-        assert_eq!(rules, [Rule::RemitsMissing]);
-    }
-
-    #[test]
-    fn every_engagement_lists_its_remits() {
-        let registry = REGISTRY_TEXT.replace("remits = []\n", "");
-        assert_eq!(
-            findings_in(&registry, CLEAN, None),
-            [(
-                Rule::RemitsMissing,
-                "engagement 'beta' has no remits key (required; [] means none)".to_owned()
-            )]
-        );
-    }
-
-    #[test]
-    fn a_remit_is_kebab_case() {
-        let registry = REGISTRY_TEXT.replace(
-            "remits = [\"build\"]",
-            "remits = [\"build-2\", \"Build\", \"a--b\", \"-a\", \"a_b\"]",
-        );
-        let found = findings_in(&registry, CLEAN, None);
-        assert_eq!(found.len(), 4, "{found:?}");
-        assert!(
-            found
-                .iter()
-                .all(|(rule, message)| *rule == Rule::RemitMalformed
-                    && !message.contains("'build-2'"))
-        );
-    }
-
-    #[test]
-    fn a_repeated_remit_is_reported_once() {
-        let registry = REGISTRY_TEXT.replace(
-            "remits = [\"build\"]",
-            "remits = [\"build\", \"build\", \"build\"]",
-        );
-        assert_eq!(
-            findings_in(&registry, CLEAN, None),
-            [(
-                Rule::RemitRepeated,
-                "engagement 'alpha' lists remit 'build' twice".to_owned()
-            )]
-        );
-    }
-
-    #[test]
-    fn a_commit_adding_a_remit_is_told_so() {
-        assert_eq!(
-            findings_in(REGISTRY_TEXT, CLEAN, Some(&["build", "publication"])),
-            [(
-                Rule::RemitNew,
-                "remit 'operations' appears for the first time in the register (existing: \
-                 build, publication)"
-                    .to_owned()
-            )]
-        );
-        let found = findings_in(REGISTRY_TEXT, CLEAN, Some(&[]));
-        assert_eq!(found.len(), 2);
-        assert!(found.iter().all(
-            |(rule, message)| *rule == Rule::RemitNew && message.ends_with("(existing: none)")
-        ));
-        assert_eq!(Rule::RemitNew.severity(), Severity::Warning);
     }
 
     #[test]
@@ -1050,65 +708,5 @@ remits = [\"operations\"]
                 ),
             ]
         );
-    }
-
-    #[test]
-    fn a_missing_state_key_takes_the_scripts_default() {
-        let registry = RegistryFile::parse("[state]\nmax_items = 15\n", "registry").unwrap();
-        assert_eq!(
-            registry.state,
-            Some(Caps {
-                max_items: 15,
-                ..Caps::default()
-            })
-        );
-        assert_eq!(
-            Caps::default(),
-            Caps {
-                max_items: 12,
-                field_tokens: 50,
-                rollup_tokens: 25,
-                next_entries: 8,
-                stale_days: 30,
-            }
-        );
-    }
-
-    #[test]
-    fn day_numbers_count_from_the_epoch() {
-        assert_eq!(day_number("1970-01-01"), Some(EPOCH_DAY));
-        assert_eq!(
-            day_number("2024-03-01").unwrap() - day_number("2024-02-28").unwrap(),
-            2
-        );
-        assert!(super::today() > day_number("2026-01-01").unwrap());
-    }
-
-    #[test]
-    fn remits_lists_each_engagement_under_each_remit() {
-        let registry = RegistryFile::parse(
-            &format!("{REGISTRY_TEXT}\n[engagements.delta]\nstatus = \"open\"\n"),
-            "registry",
-        )
-        .unwrap();
-        let on_disk = [
-            "context/engagements/alpha",
-            "context/archive/beta",
-            "context/archive/gamma",
-        ];
-        let is_dir = |dir: &str| on_disk.contains(&dir);
-        assert_eq!(
-            remits(&registry, is_dir, None),
-            [
-                "-\tbeta\tclosed\tactive\tcontext/archive/beta",
-                "build\talpha\topen\tactive\tcontext/engagements/alpha",
-                "operations\tgamma\topen\tdormant\t-",
-            ]
-        );
-        assert_eq!(
-            remits(&registry, is_dir, Some("build")),
-            ["build\talpha\topen\tactive\tcontext/engagements/alpha"]
-        );
-        assert_eq!(remits(&registry, is_dir, Some("")).len(), 3);
     }
 }
