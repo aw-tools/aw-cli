@@ -237,10 +237,20 @@ fn layout(root: &Path, registry: &RegistryFile, topic_paths: Vec<String>) -> Res
         .map(str::to_owned)
         .collect();
     Ok(Layout {
-        homes: registry.homes(),
-        subdirectories: registry.tracked_subdirectories(),
         topic_paths,
         untracked,
+        ..declared(registry)
+    })
+}
+
+/// The layout facts the registry declares, with no tree read: no topic paths,
+/// no untracked files and no `HEAD` to compare remits with.
+pub fn declared(registry: &RegistryFile) -> Layout {
+    Layout {
+        homes: registry.homes(),
+        subdirectories: registry.tracked_subdirectories(),
+        topic_paths: Vec::new(),
+        untracked: Vec::new(),
         state: registry.state,
         remits: registry
             .engagements
@@ -254,7 +264,7 @@ fn layout(root: &Path, registry: &RegistryFile, topic_paths: Vec<String>) -> Res
             .map(|(name, _)| name.clone())
             .collect(),
         prior_remits: None,
-    })
+    }
 }
 
 /// The topic tree a path sits in, the topic under it, and the topic's

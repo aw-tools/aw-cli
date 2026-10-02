@@ -169,16 +169,7 @@ mod tests {
         let kept = |registry: &str| {
             let registry = registry::RegistryFile::parse(registry, "registry").unwrap();
             let mut model = layout::read(&registry, Vec::new());
-            model.layout = Some(model::Layout {
-                homes: std::collections::BTreeMap::new(),
-                subdirectories: Vec::new(),
-                topic_paths: Vec::new(),
-                untracked: Vec::new(),
-                state: registry.state,
-                remits: std::collections::BTreeMap::new(),
-                dormant: std::collections::BTreeSet::new(),
-                prior_remits: None,
-            });
+            model.layout = Some(layout::declared(&registry));
             let findings = [rule::Rule::KindPrefix, rule::Rule::RemitsMissing]
                 .map(|rule| rules::Finding {
                     path: "context/a.md".to_owned(),

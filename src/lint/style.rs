@@ -692,28 +692,6 @@ remits = [\"operations\"]
         day_number("2026-10-02").unwrap()
     }
 
-    fn layout_of(registry: &RegistryFile) -> Layout {
-        Layout {
-            homes: BTreeMap::new(),
-            subdirectories: Vec::new(),
-            topic_paths: Vec::new(),
-            untracked: Vec::new(),
-            state: registry.state,
-            remits: registry
-                .engagements
-                .iter()
-                .map(|(name, entry)| (name.clone(), entry.remits.clone()))
-                .collect(),
-            dormant: registry
-                .engagements
-                .iter()
-                .filter(|(_, entry)| entry.activity.as_deref() == Some(layout::DORMANT))
-                .map(|(name, _)| name.clone())
-                .collect(),
-            prior_remits: None,
-        }
-    }
-
     /// The house-style findings for `state` as `STATE.md` under `registry`,
     /// with `prior` as `HEAD`'s remits.
     fn findings_in(registry: &str, state: &str, prior: Option<&[&str]>) -> Vec<(Rule, String)> {
@@ -725,7 +703,7 @@ remits = [\"operations\"]
                 format!("---\nkind: state\nstatus: live\n---\n{state}"),
             )],
         );
-        let mut layout = layout_of(&registry);
+        let mut layout = layout::declared(&registry);
         layout.prior_remits =
             prior.map(|remits| remits.iter().map(|remit| (*remit).to_owned()).collect());
         model.layout = Some(layout);
@@ -777,7 +755,7 @@ remits = [\"operations\"]
         let registry =
             RegistryFile::parse(&REGISTRY_TEXT.replace("remits = []\n", ""), "registry").unwrap();
         let mut model = layout::read(&registry, Vec::new());
-        model.layout = Some(layout_of(&registry));
+        model.layout = Some(layout::declared(&registry));
         let rules: Vec<Rule> = check(&model, today()).iter().map(|f| f.rule).collect();
         assert_eq!(rules, [Rule::RemitsMissing]);
     }
