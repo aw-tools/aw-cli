@@ -333,10 +333,9 @@ status = \"closed\"
             .collect();
         let mut model = layout::read(&registry, files);
         model.layout = Some(Layout {
-            homes: registry.homes(),
-            subdirectories: registry.tracked_subdirectories(),
             topic_paths,
             untracked: untracked.iter().map(|path| (*path).to_owned()).collect(),
+            ..layout::declared(&registry)
         });
         check(&model)
             .into_iter()

@@ -15,6 +15,7 @@ use super::tree::{self, Tree};
 use crate::git;
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::BTreeSet;
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -25,6 +26,9 @@ pub const ENGAGEMENTS: &str = "context/engagements";
 /// Where a closed engagement's topic directory sits.
 pub const ARCHIVE: &str = "context/archive";
 const TOPIC_TREES: [&str; 2] = [ENGAGEMENTS, ARCHIVE];
+/// The engagement activity that takes a roll-up line in `STATE.md` instead of
+/// an item.
+pub const DORMANT: &str = "dormant";
 
 /// Which tracked paths are artefacts.
 pub struct Scope {
@@ -70,9 +74,7 @@ impl Scope {
 /// Build the model from the tracked `*.md` files in the working tree, as
 /// `aw lint --all` reads them.
 pub fn read_worktree(root: &Path) -> Result<Model> {
-    let registry_text = std::fs::read_to_string(root.join(REGISTRY))
-        .map_err(|err| Refusal::new(format!("{REGISTRY}: {err}")))?;
-    let registry = RegistryFile::parse(&registry_text, REGISTRY)?;
+    let registry = read_registry(root)?;
     let ignore = match std::fs::read_to_string(root.join(IGNORE_FILE)) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == ErrorKind::NotFound => None,
@@ -104,6 +106,13 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
     let mut model = read(&registry, files);
     model.layout = Some(layout(root, &registry, topic_paths)?);
     Ok(model)
+}
+
+/// The registry as it stands in the working tree.
+pub fn read_registry(root: &Path) -> Result<RegistryFile, Refusal> {
+    let text = std::fs::read_to_string(root.join(REGISTRY))
+        .map_err(|err| Refusal::new(format!("{REGISTRY}: {err}")))?;
+    RegistryFile::parse(&text, REGISTRY)
 }
 
 /// Build the model of the staged tree, and of `HEAD` with what the commit
@@ -138,8 +147,19 @@ pub fn read_staged(root: &Path) -> Result<Change> {
     // tree's declaration on both sides.
     let head_registry = head
         .text(REGISTRY)?
-        .and_then(|text| RegistryFile::parse(&text, REGISTRY).ok())
-        .unwrap_or_default();
+        .map(|text| RegistryFile::parse(&text, REGISTRY).ok());
+    // An unparsed registry gives no prior remits, so no remit is announced as
+    // new rather than every one; a missing registry has none, as the script
+    // reads it.
+    let prior_remits = match &head_registry {
+        Some(None) => None,
+        Some(Some(registry)) => Some(registry.remit_values()),
+        None => Some(BTreeSet::new()),
+    };
+    let head_registry = head_registry.flatten().unwrap_or_default();
+    if let Some(layout) = &mut staged.layout {
+        layout.prior_remits = prior_remits;
+    }
     let model = read(
         &head_registry,
         head.texts(head.paths().filter(|path| scope.admits(path)))?,
@@ -217,11 +237,34 @@ fn layout(root: &Path, registry: &RegistryFile, topic_paths: Vec<String>) -> Res
         .map(str::to_owned)
         .collect();
     Ok(Layout {
-        homes: registry.homes(),
-        subdirectories: registry.tracked_subdirectories(),
         topic_paths,
         untracked,
+        ..declared(registry)
     })
+}
+
+/// The layout facts the registry declares, with no tree read: no topic paths,
+/// no untracked files and no `HEAD` to compare remits with.
+pub fn declared(registry: &RegistryFile) -> Layout {
+    Layout {
+        homes: registry.homes(),
+        subdirectories: registry.tracked_subdirectories(),
+        topic_paths: Vec::new(),
+        untracked: Vec::new(),
+        state: registry.state,
+        remits: registry
+            .engagements
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.remits.clone()))
+            .collect(),
+        dormant: registry
+            .engagements
+            .iter()
+            .filter(|(_, entry)| entry.activity.as_deref() == Some(DORMANT))
+            .map(|(name, _)| name.clone())
+            .collect(),
+        prior_remits: None,
+    }
 }
 
 /// The topic tree a path sits in, the topic under it, and the topic's

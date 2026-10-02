@@ -69,6 +69,41 @@ pub struct Layout {
     pub topic_paths: Vec<String>,
     /// `*.md` files at the root or under `context/` that git does not track.
     pub untracked: Vec<String>,
+    /// The house style's numbers, when the registry's `[state]` table opens
+    /// its gate.
+    pub state: Option<Caps>,
+    /// Each engagement's remits, `None` where the registry gives no `remits`
+    /// key.
+    pub remits: BTreeMap<String, Option<Vec<String>>>,
+    /// The engagements the registry declares dormant.
+    pub dormant: BTreeSet<String>,
+    /// The remits `HEAD`'s registry lists, when a commit is checked against a
+    /// `HEAD` whose registry is absent or parses.
+    pub prior_remits: Option<BTreeSet<String>>,
+}
+
+/// The house style's numbers. A key the `[state]` table leaves out takes the
+/// shell linter's default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct Caps {
+    pub max_items: usize,
+    pub field_tokens: usize,
+    pub rollup_tokens: usize,
+    pub next_entries: usize,
+    pub stale_days: i64,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Self {
+            max_items: 12,
+            field_tokens: 50,
+            rollup_tokens: 25,
+            next_entries: 8,
+            stale_days: 30,
+        }
+    }
 }
 
 /// A commit about to be made: the staged tree, and `HEAD` when there is one.
