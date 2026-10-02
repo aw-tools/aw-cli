@@ -940,10 +940,18 @@ pub fn has_head(dir: &Path) -> Result<bool> {
     }
 }
 
+/// A regular file's entry in a git tree.
+#[derive(PartialEq, Eq)]
+pub struct Blob {
+    pub id: String,
+    /// Mode `100755` rather than `100644`.
+    pub executable: bool,
+}
+
 /// The regular files of the index, or of `HEAD` when `head` is set, each path
-/// with its blob id. Submodules, symbolic links and unmerged entries are left
+/// with its blob. Submodules, symbolic links and unmerged entries are left
 /// out.
-pub fn blob_ids(dir: &Path, head: bool) -> Result<BTreeMap<String, String>> {
+pub fn blobs(dir: &Path, head: bool) -> Result<BTreeMap<String, Blob>> {
     let listing = if head {
         run(dir, &["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?
     } else {
@@ -962,7 +970,13 @@ pub fn blob_ids(dir: &Path, head: bool) -> Result<BTreeMap<String, String>> {
             _ => ("", "", false),
         };
         if regular && matches!(mode, "100644" | "100755") {
-            blobs.insert(path.to_owned(), id.to_owned());
+            blobs.insert(
+                path.to_owned(),
+                Blob {
+                    id: id.to_owned(),
+                    executable: mode == "100755",
+                },
+            );
         }
     }
     Ok(blobs)

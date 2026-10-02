@@ -799,6 +799,16 @@ fn lint_warns_of_an_open_ephemeral_only_in_a_commit_that_stages_it() {
     let report = alpha.join("report-01-alpha.md");
     std::fs::write(&report, "---\nkind: report\nstatus: open\n---\n").expect("write report");
     git(&["add", "context"]);
+    let warning = "warning: context/engagements/alpha/report-01-alpha.md: ephemeral artefact \
+                   still open; graduate or expire it when its unit lands [ephemeral-open]\n\
+                   0 failures, 1 warning\n";
+
+    // A first commit stages every file, the open report among them.
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
     git(&[
         "-c",
         "user.name=t",
@@ -812,9 +822,6 @@ fn lint_warns_of_an_open_ephemeral_only_in_a_commit_that_stages_it() {
         "-qm",
         "seed",
     ]);
-    let warning = "warning: context/engagements/alpha/report-01-alpha.md: ephemeral artefact \
-                   still open; graduate or expire it when its unit lands [ephemeral-open]\n\
-                   0 failures, 1 warning\n";
 
     // A commit that leaves the open report alone hears nothing of it.
     std::fs::write(
@@ -829,7 +836,19 @@ fn lint_warns_of_an_open_ephemeral_only_in_a_commit_that_stages_it() {
         .success()
         .stderr("0 failures, 0 warnings\n");
 
-    // One that stages it does, and `--all` lists it either way.
+    // A mode change alone stages it, as `git diff` lists it.
+    git(&[
+        "update-index",
+        "--chmod=+x",
+        "context/engagements/alpha/report-01-alpha.md",
+    ]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
+
+    // So does a change to its text, and `--all` lists it either way.
     std::fs::write(&report, "---\nkind: report\nstatus: open\n---\nMore.\n").expect("edit report");
     git(&["add", "context"]);
     aw().arg("lint")

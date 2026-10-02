@@ -88,8 +88,8 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
         .split_terminator('\0')
         .filter(|path| scope.admits(path))
     {
-        // A link is no artefact of its own: its target is checked under its
-        // own path, and staged mode reads regular files only.
+        // A link is no artefact of its own, and staged mode reads regular
+        // files only.
         if root.join(path).is_symlink() {
             continue;
         }
