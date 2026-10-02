@@ -734,3 +734,161 @@ fn lint_all_refuses_a_workspace_declaring_no_revision() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("no `contract`"));
 }
+
+#[test]
+fn lint_refuses_a_manifest_that_does_not_parse() {
+    let root = lint_fixture("\n[template\n", "---\nkind: doctrine\nstatus: live\n---\n");
+    for args in [&["lint"][..], &["lint", "--all"]] {
+        aw().args(args)
+            .arg(root.path())
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty());
+    }
+}
+
+#[test]
+fn lint_refuses_a_root_outside_git() {
+    let root = tempfile::tempdir().expect("temp dir");
+    write_manifest(root.path(), "fixture", "\n[template]\ncontract = 1\n");
+    let context = root.path().join("context");
+    std::fs::create_dir(&context).expect("create context");
+    std::fs::write(context.join("artefacts.toml"), LINT_REGISTRY).expect("write registry");
+    for args in [&["lint"][..], &["lint", "--all"]] {
+        aw().args(args)
+            .arg(root.path())
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty());
+    }
+}
+
+#[test]
+fn lint_warns_of_an_open_ephemeral_only_in_a_commit_that_stages_it() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} succeeds");
+    };
+    std::fs::write(
+        root.path().join("context/artefacts.toml"),
+        format!(
+            "{LINT_REGISTRY}\n[class.episodic]\nstatuses = [\"open\", \"closed\"]\n\n\
+             [class.ephemeral]\nstatuses = [\"open\", \"graduated\", \"expired\"]\n\n\
+             [kind.ledger]\nclass = \"episodic\"\n\n[kind.report]\nclass = \"ephemeral\"\n\n\
+             [engagements.alpha]\nstatus = \"open\"\nremits = []\n"
+        ),
+    )
+    .expect("write registry");
+    let alpha = root.path().join("context/engagements/alpha");
+    std::fs::create_dir_all(&alpha).expect("create engagement");
+    std::fs::write(
+        alpha.join("ledger-alpha.md"),
+        "---\nkind: ledger\nstatus: open\n---\n",
+    )
+    .expect("write ledger");
+    let report = alpha.join("report-01-alpha.md");
+    std::fs::write(&report, "---\nkind: report\nstatus: open\n---\n").expect("write report");
+    git(&["add", "context"]);
+    let warning = "warning: context/engagements/alpha/report-01-alpha.md: ephemeral artefact \
+                   still open; graduate or expire it when its unit lands [ephemeral-open]\n\
+                   0 failures, 1 warning\n";
+
+    // A first commit stages every file, the open report among them.
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        "seed",
+    ]);
+
+    // A commit that leaves the open report alone hears nothing of it.
+    std::fs::write(
+        root.path().join("context/NOTES.md"),
+        "---\nkind: doctrine\nstatus: live\n---\nA note.\n",
+    )
+    .expect("edit the note");
+    git(&["add", "context"]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr("0 failures, 0 warnings\n");
+
+    // A mode change alone stages it, as `git diff` lists it.
+    git(&[
+        "update-index",
+        "--chmod=+x",
+        "context/engagements/alpha/report-01-alpha.md",
+    ]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
+
+    // So does a change to its text, and `--all` lists it either way.
+    std::fs::write(&report, "---\nkind: report\nstatus: open\n---\nMore.\n").expect("edit report");
+    git(&["add", "context"]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(warning);
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_skips_a_symlinked_artefact_in_both_modes() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    // The link's target carries no frontmatter, so reading through the link
+    // would fail it.
+    std::fs::write(root.path().join("plain.txt"), "No frontmatter.\n").expect("write target");
+    std::os::unix::fs::symlink("../plain.txt", root.path().join("context/LINK.md"))
+        .expect("create link");
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["add", "context"])
+        .status()
+        .expect("run git add")
+        .success();
+    assert!(ok, "git add succeeds");
+    for args in [&["lint"][..], &["lint", "--all"]] {
+        aw().args(args)
+            .arg(root.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr("0 failures, 0 warnings\n");
+    }
+}

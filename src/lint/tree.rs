@@ -8,27 +8,37 @@ use std::path::Path;
 
 pub struct Tree<'a> {
     root: &'a Path,
-    /// Each regular file's path, with its blob id.
-    blobs: BTreeMap<String, String>,
+    /// Each regular file's path, with its blob.
+    blobs: BTreeMap<String, git::Blob>,
 }
 
 impl<'a> Tree<'a> {
     pub fn index(root: &'a Path) -> Result<Self> {
         Ok(Self {
             root,
-            blobs: git::blob_ids(root, false)?,
+            blobs: git::blobs(root, false)?,
         })
     }
 
     pub fn head(root: &'a Path) -> Result<Self> {
         Ok(Self {
             root,
-            blobs: git::blob_ids(root, true)?,
+            blobs: git::blobs(root, true)?,
         })
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.blobs.keys().map(String::as_str)
+    }
+
+    /// The paths this tree adds, or holds with other contents or mode than
+    /// `base`.
+    pub fn changed_from(&self, base: &Tree) -> BTreeSet<String> {
+        self.blobs
+            .iter()
+            .filter(|(path, blob)| base.blobs.get(*path) != Some(*blob))
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     /// One file's text, if the tree holds it.
@@ -43,7 +53,7 @@ impl<'a> Tree<'a> {
     ) -> Result<Vec<(String, String)>> {
         let held: Vec<(&str, &str)> = paths
             .into_iter()
-            .filter_map(|path| Some((path, self.blobs.get(path)?.as_str())))
+            .filter_map(|path| Some((path, self.blobs.get(path)?.id.as_str())))
             .collect();
         let ids: Vec<&str> = held.iter().map(|(_, id)| *id).collect();
         let contents = git::read_blobs(self.root, &ids)?;

@@ -88,6 +88,11 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
         .split_terminator('\0')
         .filter(|path| scope.admits(path))
     {
+        // A link is no artefact of its own, and staged mode reads regular
+        // files only.
+        if root.join(path).is_symlink() {
+            continue;
+        }
         match std::fs::read(root.join(path)) {
             Ok(bytes) => files.push((
                 path.to_owned(),
@@ -135,7 +140,10 @@ pub fn read_staged(root: &Path) -> Result<Change> {
         .filter(|path| topic_place(path).is_some())
         .map(str::to_owned)
         .collect();
-    staged.layout = Some(layout(root, &registry, topic_paths)?);
+    staged.layout = Some(Layout {
+        staged: Some(index.paths().map(str::to_owned).collect()),
+        ..layout(root, &registry, topic_paths)?
+    });
     if !git::has_head(root)? {
         return Ok(Change { staged, head: None });
     }
@@ -159,6 +167,7 @@ pub fn read_staged(root: &Path) -> Result<Change> {
     let head_registry = head_registry.flatten().unwrap_or_default();
     if let Some(layout) = &mut staged.layout {
         layout.prior_remits = prior_remits;
+        layout.staged = Some(index.changed_from(&head));
     }
     let model = read(
         &head_registry,
@@ -264,6 +273,7 @@ pub fn declared(registry: &RegistryFile) -> Layout {
             .map(|(name, _)| name.clone())
             .collect(),
         prior_remits: None,
+        staged: None,
     }
 }
 

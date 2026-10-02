@@ -80,6 +80,9 @@ pub struct Layout {
     /// The remits `HEAD`'s registry lists, when a commit is checked against a
     /// `HEAD` whose registry is absent or parses.
     pub prior_remits: Option<BTreeSet<String>>,
+    /// The paths a checked commit adds or changes from `HEAD`, every path when
+    /// there is no `HEAD`; `None` under `--all`, where every path counts.
+    pub staged: Option<BTreeSet<String>>,
 }
 
 /// The house style's numbers. A key the `[state]` table leaves out takes the
