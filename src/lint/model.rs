@@ -78,7 +78,7 @@ pub struct Layout {
     /// The engagements the registry declares dormant.
     pub dormant: BTreeSet<String>,
     /// The remits `HEAD`'s registry lists, when a commit is checked against a
-    /// `HEAD`.
+    /// `HEAD` whose registry is absent or parses.
     pub prior_remits: Option<BTreeSet<String>>,
 }
 

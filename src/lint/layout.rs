@@ -15,6 +15,7 @@ use super::tree::{self, Tree};
 use crate::git;
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::BTreeSet;
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -146,10 +147,18 @@ pub fn read_staged(root: &Path) -> Result<Change> {
     // tree's declaration on both sides.
     let head_registry = head
         .text(REGISTRY)?
-        .and_then(|text| RegistryFile::parse(&text, REGISTRY).ok())
-        .unwrap_or_default();
+        .map(|text| RegistryFile::parse(&text, REGISTRY).ok());
+    // An unparsed registry gives no prior remits, so no remit is announced as
+    // new rather than every one; a missing registry has none, as the script
+    // reads it.
+    let prior_remits = match &head_registry {
+        Some(None) => None,
+        Some(Some(registry)) => Some(registry.remit_values()),
+        None => Some(BTreeSet::new()),
+    };
+    let head_registry = head_registry.flatten().unwrap_or_default();
     if let Some(layout) = &mut staged.layout {
-        layout.prior_remits = Some(head_registry.remit_values());
+        layout.prior_remits = prior_remits;
     }
     let model = read(
         &head_registry,

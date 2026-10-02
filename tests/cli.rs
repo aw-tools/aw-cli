@@ -592,6 +592,100 @@ fn lint_checks_the_house_style_only_behind_a_state_table() {
 }
 
 #[test]
+fn lint_notices_a_remit_new_since_head_only_on_a_staged_commit() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} succeeds");
+    };
+    let commit = || {
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "seed",
+        ]);
+    };
+    let registry = root.path().join("context/artefacts.toml");
+    let stage = |text: &str| {
+        std::fs::write(&registry, text).expect("write registry");
+        git(&["add", "context"]);
+    };
+    let remitted = |remits: &str| {
+        format!(
+            "{LINT_REGISTRY}\n[engagements.old]\nstatus = \"closed\"\nremits = {remits}\n\n[state]\n"
+        )
+    };
+    let notice = |existing: &str| {
+        format!(
+            "warning: context/artefacts.toml: remit 'build' appears for the first time in the \
+             register (existing: {existing}) [remit-new]\n0 failures, 1 warning\n"
+        )
+    };
+
+    // A first commit has no `HEAD` to compare with, so nothing is new.
+    stage(&remitted("[\"build\"]"));
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr("0 failures, 0 warnings\n");
+
+    // A `HEAD` without a registry has no remits, as the script reads it.
+    git(&["rm", "-rq", "--cached", "context"]);
+    commit();
+    stage(&remitted("[\"build\"]"));
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(notice("none"));
+
+    // A remit `HEAD` lacks is new to the staged commit, and to it alone.
+    stage(&remitted("[\"operations\"]"));
+    commit();
+    stage(&remitted("[\"operations\", \"build\"]"));
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(notice("operations"));
+    aw().args(["lint", "--all"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr("0 failures, 0 warnings\n");
+
+    // A `HEAD` registry that does not parse gives no prior set to announce
+    // against, so repairing it announces nothing.
+    stage(&remitted("\"build\""));
+    commit();
+    stage(&remitted("[\"build\"]"));
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr("0 failures, 0 warnings\n");
+}
+
+#[test]
 fn lint_remits_lists_the_engagements_by_remit() {
     let root = lint_fixture(
         "\n[template]\ncontract = 1\n",
