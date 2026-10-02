@@ -182,6 +182,7 @@ fn topic_place(path: &str) -> Option<(&str, Option<&str>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lint::rule::Rule;
     use std::process::Command;
 
     /// The file the template ships, as this instance carries it.
@@ -463,7 +464,7 @@ class = \"ephemeral\"
         );
     }
 
-    fn staged_findings(root: &Path) -> Vec<(String, &'static str)> {
+    fn staged_findings(root: &Path) -> Vec<(String, Rule)> {
         super::super::commit::check(&read_staged(root).unwrap())
             .into_iter()
             .map(|finding| (finding.path, finding.rule))
@@ -479,7 +480,7 @@ class = \"ephemeral\"
         write(root, "context/NOTES.md", CLEAN);
         assert_eq!(
             staged_findings(root),
-            [("context/NOTES.md".to_owned(), "class-declared")]
+            [("context/NOTES.md".to_owned(), Rule::ClassDeclared)]
         );
 
         git(root, &["add", "--all"]);
@@ -519,7 +520,7 @@ class = \"ephemeral\"
                 "context/Optionen – Notizen.md",
                 "context/c d.md"
             ]
-            .map(|path| (path.to_owned(), "class-declared"))
+            .map(|path| (path.to_owned(), Rule::ClassDeclared))
         );
     }
 
@@ -536,7 +537,7 @@ class = \"ephemeral\"
         assert!(read_staged(root).unwrap().head.is_none());
         assert_eq!(
             staged_findings(root),
-            [("context/handover-a.md".to_owned(), "ephemeral-terminal")]
+            [("context/handover-a.md".to_owned(), Rule::EphemeralTerminal)]
         );
     }
 
@@ -581,7 +582,7 @@ class = \"ephemeral\"
             // the terminal state, so the snapshot finding stands.
             assert_eq!(
                 staged_findings(root),
-                [("context/handover-a.md".to_owned(), "ephemeral-terminal")],
+                [("context/handover-a.md".to_owned(), Rule::EphemeralTerminal)],
                 "{head_registry:?}"
             );
         }

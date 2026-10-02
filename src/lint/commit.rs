@@ -5,6 +5,7 @@
 //! clauses 3.4 and 3.5 never fail.
 
 use super::model::{Artefact, Change, Head, Model};
+use super::rule::Rule;
 use super::rules::{
     self, BINDING, CLOSED, EPHEMERAL, EPHEMERAL_TERMINAL, EPISODIC, Finding, OPEN, declared,
 };
@@ -30,13 +31,13 @@ pub fn check(change: &Change) -> Vec<Finding> {
     // state and a later one delete it, so only an artefact already terminal at
     // `HEAD` is held to it here.
     findings.retain(|finding| {
-        finding.rule != "ephemeral-terminal"
+        finding.rule != Rule::EphemeralTerminal
             || counterpart(head, &finding.path)
                 .and_then(|before| lifecycle(&head.model, before))
                 .is_none_or(|(_, status)| EPHEMERAL_TERMINAL.contains(&status))
     });
 
-    let mut found = |path: &str, rule: &'static str, message: String| {
+    let mut found = |path: &str, rule: Rule, message: String| {
         findings.push(Finding {
             path: path.to_owned(),
             message,
@@ -50,11 +51,7 @@ pub fn check(change: &Change) -> Vec<Finding> {
 }
 
 /// Clauses 3.3 and 3.6: each artefact against what it was at `HEAD`.
-fn check_transitions(
-    staged: &Model,
-    head: &Head,
-    found: &mut impl FnMut(&str, &'static str, String),
-) {
+fn check_transitions(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, String)) {
     for artefact in &staged.artefacts {
         let Some(before) = counterpart(head, &artefact.path) else {
             continue;
@@ -75,13 +72,13 @@ fn check_transitions(
             if reaches(class, was, status) {
                 found(
                     &artefact.path,
-                    "status-skipped",
+                    Rule::StatusSkipped,
                     format!("status moves from '{was}' to '{status}', skipping a state"),
                 );
             } else {
                 found(
                     &artefact.path,
-                    "status-backwards",
+                    Rule::StatusBackwards,
                     format!(
                         "status moves from '{was}' to '{status}', not forward along class '{class}'"
                     ),
@@ -91,7 +88,7 @@ fn check_transitions(
         if class == BINDING && !artefact.body.starts_with(&before.body) {
             found(
                 &artefact.path,
-                "binding-rewritten",
+                Rule::BindingRewritten,
                 "binding artefact changes body content already recorded; new content must \
                  follow it"
                     .to_owned(),
@@ -101,11 +98,7 @@ fn check_transitions(
 }
 
 /// Clauses 4.1.2 and 4.1.4: an ephemeral artefact leaving the tree.
-fn check_disposals(
-    staged: &Model,
-    head: &Head,
-    found: &mut impl FnMut(&str, &'static str, String),
-) {
+fn check_disposals(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, String)) {
     let records_residue = staged.artefacts.iter().any(|artefact| {
         lifecycle(staged, artefact)
             .is_some_and(|(class, _)| class != EPHEMERAL && class_in_contract(class))
@@ -120,7 +113,7 @@ fn check_disposals(
         if status == "graduated" && head.deleted.contains(&before.path) && !records_residue {
             found(
                 &before.path,
-                "residue-missing",
+                Rule::ResidueMissing,
                 "graduated ephemeral artefact deleted, but no standing, binding or episodic \
                  artefact changes in the commit to hold its residue"
                     .to_owned(),
@@ -141,7 +134,7 @@ fn check_disposals(
         if let Some(to) = archived_to {
             found(
                 to,
-                "ephemeral-archived",
+                Rule::EphemeralArchived,
                 format!(
                     "'{status}' ephemeral artefact moved from '{}' instead of deleted; history \
                      keeps it",
@@ -153,7 +146,7 @@ fn check_disposals(
 }
 
 /// Clause 4.2.2: a unit of work closing closes its episodic artefacts.
-fn check_closures(staged: &Model, head: &Head, found: &mut impl FnMut(&str, &'static str, String)) {
+fn check_closures(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, String)) {
     for unit in staged.units.iter().filter(|unit| unit.state == CLOSED) {
         let closes_here = head
             .model
@@ -169,7 +162,7 @@ fn check_closures(staged: &Model, head: &Head, found: &mut impl FnMut(&str, &'st
             {
                 found(
                     &artefact.path,
-                    "close-with-unit",
+                    Rule::CloseWithUnit,
                     format!(
                         "unit of work '{}' closes in this commit, but this artefact stays 'open'",
                         unit.name
@@ -248,7 +241,7 @@ class = \"binding\"
 
     /// The rules a commit breaks taking `notes/a.md` from `before`, or from
     /// nothing, to `after`.
-    fn rules_for(before: Option<&str>, after: &str) -> Vec<&'static str> {
+    fn rules_for(before: Option<&str>, after: &str) -> Vec<Rule> {
         let registry = RegistryFile::parse(REGISTRY, "registry").unwrap();
         let tree = |status: Option<&str>| {
             let files = status.map(|status| {
@@ -282,18 +275,18 @@ class = \"binding\"
     fn a_terminal_ephemeral_left_in_place_fails() {
         assert_eq!(
             rules_for(Some("graduated"), "graduated"),
-            ["ephemeral-terminal"]
+            [Rule::EphemeralTerminal]
         );
     }
 
     #[test]
     fn an_ephemeral_arriving_terminal_fails() {
-        assert_eq!(rules_for(None, "expired"), ["ephemeral-terminal"]);
+        assert_eq!(rules_for(None, "expired"), [Rule::EphemeralTerminal]);
     }
 
     /// The rules a commit breaks when git pairs a graduated `notes/a.md` with
     /// a new `notes/b.md` of `kind`, as a rename.
-    fn rules_for_rename(kind: &str, status: &str) -> Vec<&'static str> {
+    fn rules_for_rename(kind: &str, status: &str) -> Vec<Rule> {
         let registry = RegistryFile::parse(REGISTRY, "registry").unwrap();
         let note = |path: &str, kind: &str, status: &str| {
             let text = format!("---\nkind: {kind}\nstatus: {status}\n---\nThe outcome.\n");
@@ -322,7 +315,7 @@ class = \"binding\"
     fn a_terminal_ephemeral_moved_as_an_ephemeral_is_archived() {
         assert_eq!(
             rules_for_rename("handover", "graduated"),
-            ["ephemeral-terminal", "ephemeral-archived"]
+            [Rule::EphemeralTerminal, Rule::EphemeralArchived]
         );
     }
 
@@ -330,7 +323,7 @@ class = \"binding\"
     fn a_move_between_terminal_states_is_not_forward() {
         assert_eq!(
             rules_for(Some("graduated"), "expired"),
-            ["ephemeral-terminal", "status-backwards"]
+            [Rule::EphemeralTerminal, Rule::StatusBackwards]
         );
     }
 }

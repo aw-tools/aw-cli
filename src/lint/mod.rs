@@ -11,6 +11,7 @@ mod frontmatter;
 mod layout;
 mod model;
 mod registry;
+mod rule;
 mod rules;
 #[cfg(test)]
 mod suite;
@@ -91,7 +92,7 @@ fn report(findings: &[rules::Finding]) -> bool {
     for finding in findings {
         println!(
             "{}",
-            reporting::lint_finding(&finding.path, &finding.message, finding.rule)
+            reporting::lint_finding(&finding.path, &finding.message, finding.rule.name())
         );
     }
     // No rule warns yet.
