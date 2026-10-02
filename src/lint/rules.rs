@@ -10,6 +10,7 @@ use super::rule::Rule;
 pub(super) const BINDING: &str = "binding";
 pub(super) const EPHEMERAL: &str = "ephemeral";
 pub(super) const EPISODIC: &str = "episodic";
+pub(super) const STANDING: &str = "standing";
 const SUPERSEDED: &str = "superseded";
 pub(super) const EPHEMERAL_TERMINAL: [&str; 2] = ["graduated", "expired"];
 pub(super) const OPEN: &str = "open";

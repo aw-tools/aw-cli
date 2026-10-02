@@ -107,7 +107,9 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
 }
 
 /// Build the model of the staged tree, and of `HEAD` with what the commit
-/// moves, as plain `aw lint` reads them. The working tree is never read.
+/// moves, as plain `aw lint` reads them. No artefact is read from the working
+/// tree; only the untracked `*.md` listing behind the `artefact-untracked`
+/// warning looks at it, as the script's `find` does.
 pub fn read_staged(root: &Path) -> Result<Change> {
     let index = Tree::index(root)?;
     let registry_text = index

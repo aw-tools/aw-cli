@@ -7,7 +7,7 @@
 use super::layout::{ARCHIVE, ENGAGEMENTS, REGISTRY, topic_place};
 use super::model::{Artefact, Layout, Model};
 use super::rule::Rule;
-use super::rules::{CLOSED, EPHEMERAL, Finding, OPEN, declared};
+use super::rules::{BINDING, CLOSED, EPHEMERAL, Finding, OPEN, STANDING, declared};
 use std::collections::BTreeSet;
 
 /// The registry's prose companion, a standing artefact lowercase by design.
@@ -57,7 +57,7 @@ fn check_artefact(
     };
     let path = artefact.path.as_str();
     match class.as_str() {
-        "standing" | "binding" => {
+        STANDING | BINDING => {
             // A kind naming no home has nowhere to be held to.
             let Some(home) = layout.homes.get(kind) else {
                 return;
