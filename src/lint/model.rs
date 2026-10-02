@@ -6,6 +6,8 @@ pub struct Model {
     pub registry: Registry,
     pub artefacts: Vec<Artefact>,
     pub units: Vec<Unit>,
+    /// What the template's layout adds, when the model was read from one.
+    pub layout: Option<Layout>,
 }
 
 /// The classes with their states, and the kind each class is reached through.
@@ -52,11 +54,21 @@ pub struct Unit {
     /// Paths of the artefacts belonging to it.
     pub members: Vec<String>,
     /// Units this one names as prerequisites.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the layout rules read it; no contract rule does")
-    )]
     pub depends_on: Vec<String>,
+}
+
+/// Where the template lays each kind out, and the paths the artefact
+/// declaration does not reach.
+pub struct Layout {
+    /// Kind name to the directory its artefacts sit in, for each kind that
+    /// names one.
+    pub homes: BTreeMap<String, String>,
+    /// Subdirectories a topic may hold in a tracked path.
+    pub subdirectories: Vec<String>,
+    /// Every tracked path under a topic tree, artefact or not.
+    pub topic_paths: Vec<String>,
+    /// `*.md` files at the root or under `context/` that git does not track.
+    pub untracked: Vec<String>,
 }
 
 /// A commit about to be made: the staged tree, and `HEAD` when there is one.

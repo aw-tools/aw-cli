@@ -9,7 +9,7 @@
 
 use super::Refusal;
 use super::frontmatter;
-use super::model::{Artefact, Change, Head, Model, Unit};
+use super::model::{Artefact, Change, Head, Layout, Model, Unit};
 use super::registry::RegistryFile;
 use super::tree::{self, Tree};
 use crate::git;
@@ -20,7 +20,11 @@ use std::path::Path;
 
 pub const REGISTRY: &str = "context/artefacts.toml";
 pub const IGNORE_FILE: &str = ".awlintignore";
-const TOPIC_TREES: [&str; 2] = ["context/engagements", "context/archive"];
+/// Where an open engagement's topic directory sits.
+pub const ENGAGEMENTS: &str = "context/engagements";
+/// Where a closed engagement's topic directory sits.
+pub const ARCHIVE: &str = "context/archive";
+const TOPIC_TREES: [&str; 2] = [ENGAGEMENTS, ARCHIVE];
 
 /// Which tracked paths are artefacts.
 pub struct Scope {
@@ -54,7 +58,7 @@ impl Scope {
     pub fn admits(&self, path: &str) -> bool {
         path.ends_with(".md")
             && !topic_place(path)
-                .and_then(|(_, subdirectory)| subdirectory)
+                .and_then(|(_, _, subdirectory)| subdirectory)
                 .is_some_and(|name| self.subdirectories.iter().any(|s| s == name))
             && !self
                 .ignore
@@ -92,11 +96,20 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
             Err(err) => return Err(err).with_context(|| format!("reading {path}")),
         }
     }
-    Ok(read(&registry, files))
+    let topic_paths = git::run(root, &["ls-files", "-z", "--", ENGAGEMENTS, ARCHIVE])?
+        .split_terminator('\0')
+        .filter(|path| topic_place(path).is_some())
+        .map(str::to_owned)
+        .collect();
+    let mut model = read(&registry, files);
+    model.layout = Some(layout(root, &registry, topic_paths)?);
+    Ok(model)
 }
 
 /// Build the model of the staged tree, and of `HEAD` with what the commit
-/// moves, as plain `aw lint` reads them. The working tree is never read.
+/// moves, as plain `aw lint` reads them. No artefact is read from the working
+/// tree; only the untracked `*.md` listing behind the `artefact-untracked`
+/// warning looks at it, as the script's `find` does.
 pub fn read_staged(root: &Path) -> Result<Change> {
     let index = Tree::index(root)?;
     let registry_text = index
@@ -104,10 +117,16 @@ pub fn read_staged(root: &Path) -> Result<Change> {
         .ok_or_else(|| Refusal::new(format!("{REGISTRY}: not in the index")))?;
     let registry = RegistryFile::parse(&registry_text, REGISTRY)?;
     let scope = Scope::new(index.text(IGNORE_FILE)?.as_deref(), &registry)?;
-    let staged = read(
+    let mut staged = read(
         &registry,
         index.texts(index.paths().filter(|path| scope.admits(path)))?,
     );
+    let topic_paths = index
+        .paths()
+        .filter(|path| topic_place(path).is_some())
+        .map(str::to_owned)
+        .collect();
+    staged.layout = Some(layout(root, &registry, topic_paths)?);
     if !git::has_head(root)? {
         return Ok(Change { staged, head: None });
     }
@@ -154,7 +173,10 @@ pub fn read(registry: &RegistryFile, files: Vec<(String, String)>) -> Model {
             state: entry.status.clone(),
             members: artefacts
                 .iter()
-                .filter(|artefact| topic_place(&artefact.path) == Some((name.as_str(), None)))
+                .filter(|artefact| {
+                    topic_place(&artefact.path)
+                        .is_some_and(|(_, topic, sub)| topic == name && sub.is_none())
+                })
                 .map(|artefact| artefact.path.clone())
                 .collect(),
             depends_on: entry.depends_on.clone(),
@@ -164,19 +186,54 @@ pub fn read(registry: &RegistryFile, files: Vec<(String, String)>) -> Model {
         registry: registry.registry(),
         artefacts,
         units,
+        layout: None,
     }
 }
 
-/// The topic a path sits under in a topic tree, with the topic's subdirectory
-/// holding it, if any. `None` for a path outside a topic.
-fn topic_place(path: &str) -> Option<(&str, Option<&str>)> {
-    let rest = TOPIC_TREES
+/// The layout facts beside the model: each kind's home, the permitted
+/// subdirectories, `topic_paths` as the tree being checked holds them, and the
+/// untracked `*.md` files in the working tree.
+fn layout(root: &Path, registry: &RegistryFile, topic_paths: Vec<String>) -> Result<Layout> {
+    // As the script's `find`, the listing ignores `.gitignore`; scratch under
+    // any `tmp/` and the contents of a topic's subdirectories are not
+    // artefacts.
+    let listing = git::run(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--",
+            ":(glob)*.md",
+            ":(glob)context/**/*.md",
+        ],
+    )?;
+    let untracked = listing
+        .split_terminator('\0')
+        .filter(|path| {
+            !path.split('/').any(|part| part == "tmp")
+                && topic_place(path).is_none_or(|(_, _, sub)| sub.is_none())
+        })
+        .map(str::to_owned)
+        .collect();
+    Ok(Layout {
+        homes: registry.homes(),
+        subdirectories: registry.tracked_subdirectories(),
+        topic_paths,
+        untracked,
+    })
+}
+
+/// The topic tree a path sits in, the topic under it, and the topic's
+/// subdirectory holding the path, if any. `None` for a path outside a topic.
+pub fn topic_place(path: &str) -> Option<(&'static str, &str, Option<&str>)> {
+    let (tree, rest) = TOPIC_TREES
         .iter()
-        .find_map(|tree| path.strip_prefix(tree)?.strip_prefix('/'))?;
+        .find_map(|tree| Some((*tree, path.strip_prefix(tree)?.strip_prefix('/')?)))?;
     let mut parts = rest.split('/');
     let topic = parts.next()?;
     let second = parts.next()?;
-    Some((topic, parts.next().map(|_| second)))
+    Some((tree, topic, parts.next().map(|_| second)))
 }
 
 #[cfg(test)]
@@ -418,6 +475,56 @@ status = \"closed\"
                 && !path.ends_with("README.md")
         });
         assert_eq!(worktree_paths(root), expected);
+    }
+
+    #[test]
+    fn the_readers_gather_topic_paths_and_untracked_markdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "--quiet"]);
+        write(root, REGISTRY, REGISTRY_TEXT);
+        write(root, ".gitignore", "context/ignored.md\n");
+        for path in [
+            "context/engagements/alpha/plan-a.md",
+            "context/engagements/alpha/attachments/source.json",
+            "context/engagements/stray.md",
+            "context/archive/beta/plan-b.md",
+            "context/STATE.md",
+        ] {
+            write(root, path, "---\nkind: plan\nstatus: open\n---\n");
+        }
+        git(root, &["add", "--all"]);
+        for path in [
+            "NOTES.md",
+            "docs/guide.md",
+            "context/ignored.md",
+            "context/engagements/alpha/plan-new.md",
+            "context/engagements/alpha/attachments/transcript.md",
+            "context/engagements/alpha/tmp/scratch.md",
+            "context/tmp/scratch.md",
+            "context/notes.txt",
+        ] {
+            write(root, path, "");
+        }
+
+        let topic_paths = [
+            "context/archive/beta/plan-b.md",
+            "context/engagements/alpha/attachments/source.json",
+            "context/engagements/alpha/plan-a.md",
+        ];
+        let untracked = [
+            "NOTES.md",
+            "context/engagements/alpha/plan-new.md",
+            "context/ignored.md",
+        ];
+        let worktree = read_worktree(root).unwrap().layout.unwrap();
+        assert_eq!(worktree.topic_paths, topic_paths);
+        assert_eq!(worktree.untracked, untracked);
+        assert_eq!(worktree.subdirectories, ["attachments"]);
+
+        let staged = read_staged(root).unwrap().staged.layout.unwrap();
+        assert_eq!(staged.topic_paths, topic_paths);
+        assert_eq!(staged.untracked, untracked);
     }
 
     const STAGED_REGISTRY: &str = "\

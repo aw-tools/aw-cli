@@ -501,6 +501,56 @@ fn lint_all_prints_a_finding_and_exits_1() {
 }
 
 #[test]
+fn lint_warns_of_untracked_markdown_and_still_passes() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    std::fs::write(root.path().join("context/DRAFT.md"), "").expect("write untracked file");
+    for args in [&["lint"][..], &["lint", "--all"]] {
+        aw().args(args)
+            .arg(root.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(
+                "warning: context/DRAFT.md: untracked, so invisible to every other check \
+                 until `git add` [artefact-untracked]\n0 failures, 1 warning\n",
+            );
+    }
+}
+
+#[test]
+fn lint_fails_on_an_unregistered_engagement_directory() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    let topic = root.path().join("context/engagements/ghost");
+    std::fs::create_dir_all(&topic).expect("create topic");
+    std::fs::write(topic.join("notes.txt"), "").expect("write topic file");
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["add", "context"])
+        .status()
+        .expect("run git add")
+        .success();
+    assert!(ok, "git add succeeds");
+    for args in [&["lint"][..], &["lint", "--all"]] {
+        aw().args(args)
+            .arg(root.path())
+            .assert()
+            .code(1)
+            .stdout(
+                "context/engagements/ghost/: engagement not in registry \
+                 [engagement-unregistered]\n",
+            )
+            .stderr("1 failure, 0 warnings\n");
+    }
+}
+
+#[test]
 fn lint_all_refuses_a_workspace_declaring_no_revision() {
     let root = lint_fixture("", "---\nkind: doctrine\nstatus: live\n---\n");
     aw().args(["lint", "--all"])
