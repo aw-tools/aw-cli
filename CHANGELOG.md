@@ -6,6 +6,21 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
+### Added
+
+- `aw init` records `contract = 1` in `workspace.toml`, and a `[template]` block
+  may hold `contract` alone (#51)
+- `aw lint --all` checks every tracked artefact against the contract, printing
+  each failure with the name of the rule it breaks (#52)
+- `aw lint` checks the pending commit, catching a status moving backwards, an
+  edited decision, or a finished note deleted without its outcome (#53)
+- `aw lint` checks where each file sits and what it is named, and warns about
+  open reports and untracked notes (#55)
+- `aw lint` checks the house style when the registry has a `[state]` table, and
+  `aw lint --remits` lists engagements by remit (#56)
+
 ## [0.4.0-rc.1] - 2026-10-03
 
 ### Added
