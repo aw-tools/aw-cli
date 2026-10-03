@@ -103,14 +103,22 @@ pub fn read_worktree(root: &Path) -> Result<Model> {
             Err(err) => return Err(err).with_context(|| format!("reading {path}")),
         }
     }
-    let topic_paths = git::run(root, &["ls-files", "-z", "--", ENGAGEMENTS, ARCHIVE])?
-        .split_terminator('\0')
-        .filter(|path| topic_place(path).is_some())
-        .map(str::to_owned)
-        .collect();
     let mut model = read(&registry, files);
-    model.layout = Some(layout(root, &registry, topic_paths)?);
+    model.layout = Some(layout(root, &registry, topic_paths(root)?)?);
     Ok(model)
+}
+
+/// Every path the index tracks under a topic directory, symlinks and other
+/// non-regular entries included, as the script's `git ls-files` lists them.
+/// Both modes read the index here, so they agree on the same tree.
+fn topic_paths(root: &Path) -> Result<Vec<String>> {
+    Ok(
+        git::run(root, &["ls-files", "-z", "--", ENGAGEMENTS, ARCHIVE])?
+            .split_terminator('\0')
+            .filter(|path| topic_place(path).is_some())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// The registry as it stands in the working tree.
@@ -135,14 +143,9 @@ pub fn read_staged(root: &Path) -> Result<Change> {
         &registry,
         index.texts(index.paths().filter(|path| scope.admits(path)))?,
     );
-    let topic_paths = index
-        .paths()
-        .filter(|path| topic_place(path).is_some())
-        .map(str::to_owned)
-        .collect();
     staged.layout = Some(Layout {
         staged: Some(index.paths().map(str::to_owned).collect()),
-        ..layout(root, &registry, topic_paths)?
+        ..layout(root, &registry, topic_paths(root)?)?
     });
     if !git::has_head(root)? {
         return Ok(Change { staged, head: None });
@@ -546,6 +549,12 @@ status = \"closed\"
         ] {
             write(root, path, "---\nkind: plan\nstatus: open\n---\n");
         }
+        std::fs::create_dir_all(root.join("context/engagements/gamma")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../STATE.md",
+            root.join("context/engagements/gamma/link.md"),
+        )
+        .unwrap();
         git(root, &["add", "--all"]);
         for path in [
             "NOTES.md",
@@ -564,6 +573,7 @@ status = \"closed\"
             "context/archive/beta/plan-b.md",
             "context/engagements/alpha/attachments/source.json",
             "context/engagements/alpha/plan-a.md",
+            "context/engagements/gamma/link.md",
         ];
         let untracked = [
             "NOTES.md",
