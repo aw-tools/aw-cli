@@ -62,9 +62,8 @@ changelog:
 changelog-entry:
   - CHANGELOG.md
 
-# Read on a push to main, not on a pull request: the files the job caches are
-# keyed on, plus ci.yml for the Zig and garden versions. A change here runs the
-# cached jobs on main, the only branch whose caches every pull request reads.
+# Read only on a push to main: the files the cache keys derive from, plus
+# ci.yml for the Zig and garden versions.
 cache:
   - .github/workflows/ci.yml
   - Cargo.lock

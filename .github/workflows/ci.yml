@@ -5,8 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # A cache unread for 7 days is deleted; this run reads main's caches weekly
-  # so a quiet spell does not leave the next pull request to rebuild them.
+  # GitHub deletes a cache unread for 7 days; this run reads main's weekly.
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
