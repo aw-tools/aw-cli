@@ -14,17 +14,19 @@ The primary threats are:
 - **A malicious template.** `aw init` clones a template from a URL the user
   gives, or the built-in default, and without an explicit ref seeds from the
   highest stable tag found in that clone, never from anything the remote
-  advertises separately. The template's contents become the workspace.
-  `aw bootstrap` runs `garden` on the template's `garden.yaml`, which can run
-  shell commands, and sets `core.hooksPath` to the template's hook directory
-  when one exists. A hostile template can therefore run code during
-  `aw bootstrap` and on every commit after it. Before copying a template other
-  than the default, `aw init` lists the hooks, executables, agent files and
-  links it holds, folding a directory of more than five into a count, and asks
-  whether to go on. The listing omits `garden.yaml`. `aw init` does not ask when
-  the workspace already records that template. `--trust-template` skips both the
-  listing and the question; without it and with no terminal to ask on, `aw init`
-  prints the listing and exits with status 2.
+  advertises separately. The template's contents become the workspace, so a
+  hostile template can run code in two ways:
+  - `aw bootstrap` runs `garden` on the template's `garden.yaml`, which can run
+    shell commands.
+  - `aw bootstrap` points git's hooks at the template's hook directory, so its
+    hooks run on every commit.
+
+  Before copying a template other than the default, `aw init` lists the hooks,
+  executables, agent files and links it holds. The listing leaves out
+  `garden.yaml`, and it shows a directory of more than five files as a count.
+  `aw init` then asks whether to go on, unless the workspace already records
+  that template. `--trust-template` skips the listing and the question. With no
+  terminal, `aw init` prints the listing and exits with status 2.
 - **Credential leakage** through a template or manifest URL.
 - **A hung or runaway subprocess** from an unreachable remote.
 
@@ -61,9 +63,9 @@ The primary threats are:
 
 - The user reads a template before running `aw bootstrap` inside it, the same
   way they would read a repository before running its build. `aw` checks no
-  signature, and nothing vouches for the commit the first `aw init` takes. A
-  later `aw init` refuses a template that resolves to a different commit.
-  Whether a template is trustworthy is the user's call.
+  signature, and nothing checks the commit the first `aw init` takes against a
+  known-good one. A later `aw init` refuses a template that resolves to a
+  different commit. Whether a template is trustworthy is the user's call.
 - `git` and `garden` on `PATH` are the user's own installs and are trusted.
 - Remotes are reached over the transports git is configured for; `aw` adds no
   transport of its own.
