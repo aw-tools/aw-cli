@@ -37,16 +37,16 @@ pub fn render_trees(manifest: &Manifest) -> String {
 
     for repo in &manifest.repos {
         let _ = writeln!(out, "  {}:", yaml_key(&repo.tree_name()));
-        let _ = writeln!(out, "    path: {}", yaml_str(&repo.path));
-        let _ = writeln!(out, "    url: {}", yaml_str(&repo.url));
+        let _ = writeln!(out, "    path: {}", literal(&repo.path));
+        let _ = writeln!(out, "    url: {}", literal(&repo.url));
         if let Some(branch) = &repo.branch {
-            let _ = writeln!(out, "    branch: {}", yaml_str(branch));
+            let _ = writeln!(out, "    branch: {}", literal(branch));
         }
         let gitconfig = identity_pairs(manifest.identity.as_ref());
         if !gitconfig.is_empty() {
             out.push_str("    gitconfig:\n");
             for (key, value) in gitconfig {
-                let _ = writeln!(out, "      {key}: {}", yaml_str(&value));
+                let _ = writeln!(out, "      {key}: {}", literal(&value));
             }
         }
     }
@@ -139,6 +139,13 @@ fn yaml_key(value: &str) -> String {
     yaml_str(value)
 }
 
+/// A tree value garden reads as written. Garden expands `${name}` in a value and
+/// runs one that starts with `$ ` as a shell command; `$$` is its escape for a
+/// literal `$`. Tree names are never expanded, so keys go through `yaml_key`.
+fn literal(value: &str) -> String {
+    yaml_str(&value.replace('$', "$$"))
+}
+
 /// Single-quoted YAML scalar. Single quotes are the only character needing an
 /// escape inside them, doubled per the YAML specification.
 fn yaml_str(value: &str) -> String {
@@ -189,6 +196,30 @@ mod tests {
         ));
         assert!(rendered.contains("user.name: 'Ada'"), "{rendered}");
         assert!(rendered.contains("commit.gpgsign: 'true'"), "{rendered}");
+    }
+
+    #[test]
+    fn renders_every_value_literally_for_garden() {
+        let rendered = render_trees(&manifest(
+            r#"
+            [workspace]
+            name = "w"
+            [identity]
+            name = "$ touch name"
+            [[repo]]
+            path = "$ touch path"
+            url = "$ touch url"
+            branch = "${HOME}"
+            "#,
+        ));
+        assert!(rendered.contains("path: '$$ touch path'"), "{rendered}");
+        assert!(rendered.contains("url: '$$ touch url'"), "{rendered}");
+        assert!(rendered.contains("branch: '$${HOME}'"), "{rendered}");
+        assert!(
+            rendered.contains("user.name: '$$ touch name'"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("  '$ touch path':"), "{rendered}");
     }
 
     #[test]

@@ -34,13 +34,13 @@ The primary threats are:
 
 ## Trust boundaries
 
-| Input surface                 | Trust level                      | Validation                                                                                                        |
-| ----------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| CLI arguments                 | Trusted (user-invoked)           | Clap argument parsing                                                                                             |
-| Template URL and ref          | Partially trusted                | HTTP(S) URLs with embedded credentials, query strings or fragments are rejected                                   |
-| Template contents (`aw init`) | Untrusted until the user reads   | Not executed by `aw init`; a template other than the default is listed and confirmed first (see the threat model) |
-| Manifest (`workspace.toml`)   | Trusted (user-authored, tracked) | TOML parsing via `serde`; repository URLs are passed to `git` and `garden` as arguments                           |
-| Git and garden output         | Trusted (local tools)            | Parsed for reporting only                                                                                         |
+| Input surface                 | Trust level                                                  | Validation                                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| CLI arguments                 | Trusted (user-invoked)                                       | Clap argument parsing                                                                                                           |
+| Template URL and ref          | Partially trusted                                            | HTTP(S) URLs with embedded credentials, query strings or fragments are rejected                                                 |
+| Template contents (`aw init`) | Untrusted until the user reads                               | Not executed by `aw init`; a template other than the default is listed and confirmed first (see the threat model)               |
+| Manifest (`workspace.toml`)   | Partially trusted (seeded by the template, then user-edited) | TOML parsing via `serde`; repository paths must stay inside the workspace; values reach `git` as arguments and `garden` escaped |
+| Git and garden output         | Trusted (local tools)                                        | Parsed for reporting only                                                                                                       |
 
 ## Security measures
 

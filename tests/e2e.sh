@@ -557,6 +557,33 @@ assert "nothing was cloned outside the workspace" \
 	"$([ -e "$WORK/outside" ] && echo yes || echo no)" no
 }
 
+# --- garden reads manifest values as written ---------------------------------
+case_literal_values() {
+"$AW" init --trust-template --template "$WORK/seed-template" \
+	"$WORK/dollar.workspace" --name dollar >/dev/null 2>&1
+cat >>"$WORK/dollar.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "alpha\${HOME}"
+url = "$WORK/origins/alpha.git"
+EOF
+"$AW" bootstrap "$WORK/dollar.workspace" >"$WORK/dollar.log" 2>&1 || true
+assert "a \$ in a path reaches garden unexpanded" \
+	"$([ -d "$WORK/dollar.workspace/alpha\${HOME}/.git" ] && echo yes || echo no)" yes
+
+"$AW" init --trust-template --template "$WORK/seed-template" \
+	"$WORK/command.workspace" --name command >/dev/null 2>&1
+cat >>"$WORK/command.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "alpha"
+url = "\$ touch $WORK/pwned"
+EOF
+"$AW" bootstrap "$WORK/command.workspace" >"$WORK/command.log" 2>&1 || true
+assert "a url written as a garden command never runs" \
+	"$([ -e "$WORK/pwned" ] && echo yes || echo no)" no
+}
+
 # --- adopt -------------------------------------------------------------------
 case_adopt() {
 "$AW" init --trust-template --template "$WORK/seed-template" \
@@ -1851,6 +1878,7 @@ set +e
 run_case init case_init
 run_case bootstrap case_bootstrap
 run_case containment case_containment
+run_case literal-values case_literal_values
 run_case adopt case_adopt
 run_case doctor case_doctor
 run_case doctor-pinned-branch case_doctor_pinned_branch
