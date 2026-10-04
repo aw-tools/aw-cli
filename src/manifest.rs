@@ -256,8 +256,24 @@ impl Manifest {
         if let Some(block) = &self.template {
             block.provenance()?;
         }
+        if let Some(identity) = &self.identity {
+            for (field, value) in [
+                ("identity name", &identity.name),
+                ("identity email", &identity.email),
+                ("identity signingkey", &identity.signingkey),
+            ] {
+                if let Some(value) = value {
+                    check_printable(field, value)?;
+                }
+            }
+        }
         let mut seen = std::collections::BTreeSet::new();
         for repo in &self.repos {
+            check_printable("repo path", &repo.path)?;
+            check_printable(&format!("url of repo {}", repo.path), &repo.url)?;
+            if let Some(branch) = &repo.branch {
+                check_printable(&format!("branch of repo {}", repo.path), branch)?;
+            }
             check_contained(&repo.path)?;
             let tree = repo.tree_name();
             anyhow::ensure!(
@@ -654,6 +670,16 @@ fn manifest_marker(dir: &Path) -> Result<bool> {
     }
 }
 
+/// Every value written to the generated garden file stays on one line there: a
+/// line break would end the YAML scalar and corrupt the file.
+fn check_printable(field: &str, value: &str) -> Result<()> {
+    anyhow::ensure!(
+        !value.chars().any(char::is_control),
+        "{field} {value:?} contains a control character; manifest values must be printable text"
+    );
+    Ok(())
+}
+
 /// A workspace contains everything it manages. A checkout that escapes the root
 /// makes the workspace non-portable and behaves differently depending on who
 /// runs the bootstrap — it works in a terminal and fails under a sandboxed
@@ -970,6 +996,26 @@ mod tests {
         .expect("fixture parses");
         let err = manifest.validate().expect_err("colliding tree names");
         assert!(err.to_string().contains("collides"), "{err}");
+    }
+
+    #[test]
+    fn rejects_control_characters_in_garden_values() {
+        for (fragment, field) in [
+            ("[[repo]]\npath = \"a\\nb\"\nurl = \"u\"\n", "repo path"),
+            ("[[repo]]\npath = \"a\"\nurl = \"u\\n\"\n", "url of repo a"),
+            (
+                "[[repo]]\npath = \"a\"\nurl = \"u\"\nbranch = \"m\\tx\"\n",
+                "branch of repo a",
+            ),
+            ("[identity]\nemail = \"e\\r\"\n", "identity email"),
+        ] {
+            let manifest: Manifest =
+                toml::from_str(&format!("[workspace]\nname = \"w\"\n{fragment}"))
+                    .expect("fixture parses");
+            let err = manifest.validate().expect_err("control character");
+            assert!(err.to_string().starts_with(field), "{err}");
+            assert!(err.to_string().contains("control character"), "{err}");
+        }
     }
 
     #[test]
