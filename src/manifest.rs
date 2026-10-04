@@ -578,7 +578,11 @@ pub fn append_repo(root: &Path, repo: &Repo) -> Result<()> {
     }
     repos.push(table);
 
-    replace_atomically(&path, document.to_string().as_bytes(), &metadata)
+    let updated = document.to_string();
+    let manifest: Manifest = toml::from_str(&updated)
+        .with_context(|| format!("parsing updated manifest {}", path.display()))?;
+    manifest.validate()?;
+    replace_atomically(&path, updated.as_bytes(), &metadata)
 }
 
 fn replace_atomically(path: &Path, contents: &[u8], metadata: &Metadata) -> Result<()> {
@@ -670,13 +674,17 @@ fn manifest_marker(dir: &Path) -> Result<bool> {
     }
 }
 
-/// Every value written to the generated garden file stays on one line there: a
-/// line break would end the YAML scalar and corrupt the file.
+/// Every value written to the generated garden file must reach garden unchanged.
+/// A line break inside a quoted YAML scalar folds to a space or breaks the file,
+/// so refusing only `\n` would still let `\r` and others through.
+/// The error names the position, never the value: a url may embed a token.
 fn check_printable(field: &str, value: &str) -> Result<()> {
-    anyhow::ensure!(
-        !value.chars().any(char::is_control),
-        "{field} {value:?} contains a control character; manifest values must be printable text"
-    );
+    if let Some(position) = value.chars().position(char::is_control) {
+        anyhow::bail!(
+            "{field} contains a control character at position {}; manifest values must be printable text",
+            position + 1
+        );
+    }
     Ok(())
 }
 
@@ -783,6 +791,29 @@ mod tests {
                 .expect("read test directory")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn append_refuses_a_repo_the_manifest_would_reject() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join(FILENAME);
+        let original = "[workspace]\nname = \"w\"\n";
+        std::fs::write(&path, original).expect("write original manifest");
+        let repo = Repo {
+            path: "member".into(),
+            url: "u\n".into(),
+            branch: None,
+            skills: None,
+            agents: None,
+        };
+
+        let err = append_repo(temp.path(), &repo).expect_err("control character");
+
+        assert!(err.to_string().contains("control character"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read preserved manifest"),
+            original
         );
     }
 
@@ -1007,7 +1038,9 @@ mod tests {
                 "[[repo]]\npath = \"a\"\nurl = \"u\"\nbranch = \"m\\tx\"\n",
                 "branch of repo a",
             ),
+            ("[identity]\nname = \"n\\u0007\"\n", "identity name"),
             ("[identity]\nemail = \"e\\r\"\n", "identity email"),
+            ("[identity]\nsigningkey = \"k\\n\"\n", "identity signingkey"),
         ] {
             let manifest: Manifest =
                 toml::from_str(&format!("[workspace]\nname = \"w\"\n{fragment}"))
@@ -1015,6 +1048,7 @@ mod tests {
             let err = manifest.validate().expect_err("control character");
             assert!(err.to_string().starts_with(field), "{err}");
             assert!(err.to_string().contains("control character"), "{err}");
+            assert!(!err.to_string().contains('"'), "{err}");
         }
     }
 
