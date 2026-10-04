@@ -14,6 +14,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default, as the template contract requires (#62)
 - `aw init` lists a template's `garden.yaml` before asking to use it, because
   `aw bootstrap` hands it to garden, which can run commands from it (#65)
+- `aw bootstrap` passes every `workspace.toml` value to garden as written, so
+  garden runs none of them as a shell command (#66)
 
 ## [0.4.0] - 2026-10-03
 
