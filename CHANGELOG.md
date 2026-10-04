@@ -12,6 +12,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its short name, instead of `heads/main` (#61)
 - `aw init` refuses a template whose `.gitignore` does not deny everything by
   default, as the template contract requires (#62)
+- `aw init` lists a template's `garden.yaml` before asking to use it, because
+  `aw bootstrap` hands it to garden, which can run commands from it (#65)
 
 ## [0.4.0] - 2026-10-03
 

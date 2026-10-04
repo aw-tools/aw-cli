@@ -1,9 +1,10 @@
 //! Consent before `aw init` copies a template other than the default.
 //!
-//! Nothing in a template runs during `aw init`, but its hooks, executables and
-//! agent instructions act later, through `aw bootstrap` and every agent session
-//! in the workspace. A template the user named is therefore shown, and
-//! accepted, before any of it lands in the target.
+//! Nothing in a template runs during `aw init`, but its hooks, executables,
+//! garden configuration and agent instructions act later, through
+//! `aw bootstrap` and every agent session in the workspace. A template the
+//! user named is therefore shown, and accepted, before any of it lands in the
+//! target.
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +12,7 @@ use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::garden;
 use crate::manifest::Template;
 use crate::reporting;
 use crate::template;
@@ -174,7 +176,8 @@ fn acts(path: &Path, mode: u32) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| INSTRUCTION_FILES.contains(&name));
-    in_acting_dir || instructs || mode & 0o111 != 0
+    let configures = path == Path::new(garden::CONFIG_FILE);
+    in_acting_dir || instructs || configures || mode & 0o111 != 0
 }
 
 /// The top-level directory holding `path`; none for a file at the root.
@@ -261,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_hooks_executables_agent_files_and_links_but_nothing_else() {
+    fn lists_hooks_executables_agent_files_garden_config_and_links_only() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         write(root, ".git/hooks/pre-commit", 0o755);
@@ -271,6 +274,8 @@ mod tests {
         write(root, "docs/AGENTS.md", 0o644);
         write(root, "CLAUDE.md", 0o644);
         write(root, "README.md", 0o644);
+        write(root, "garden.yaml", 0o644);
+        write(root, "docs/garden.yaml", 0o644);
         write(root, "workspace.toml", 0o644);
         std::os::unix::fs::symlink("/etc/passwd", root.join("notes")).unwrap();
 
@@ -292,6 +297,7 @@ mod tests {
                 "CLAUDE.md",
                 "bin/bootstrap",
                 "docs/AGENTS.md",
+                "garden.yaml",
                 "notes -> /etc/passwd",
             ]
         );

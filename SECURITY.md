@@ -22,8 +22,10 @@ The primary threats are:
     hooks run on every commit.
 
   Before copying a template other than the default, `aw init` lists the hooks,
-  executables, agent files and links it holds. The listing leaves out
-  `garden.yaml`, and it shows a directory of more than five files as a count.
+  executables, agent files, `garden.yaml` and links it holds. It shows a
+  directory of more than five files as a count. The listing names the files that
+  run, not what they pull in: a hook can run any other file, and `garden.yaml`
+  can include one, so reading a listed file means reading what it reaches too.
   `aw init` then asks whether to go on, unless the workspace already records
   that template. `--trust-template` skips the listing and the question. With no
   terminal, `aw init` prints the listing and exits with status 2.
