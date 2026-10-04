@@ -68,8 +68,8 @@ fn init_rejects_credentials_in_an_http_template_url() {
 
 // --- init: consent for a non-default template -------------------------------
 
-/// A contract-valid template repository with an executable hook, so the
-/// consent listing has something to show.
+/// A contract-valid template repository with an executable hook and a garden
+/// configuration, so the consent listing has something to show.
 fn local_template(root: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let seed = root.join("template");
@@ -79,6 +79,7 @@ fn local_template(root: &Path) -> std::path::PathBuf {
     let hook = seed.join(".githooks/pre-commit");
     std::fs::write(&hook, "#!/bin/sh\n").expect("hook");
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod hook");
+    std::fs::write(seed.join("garden.yaml"), "garden: {}\n").expect("garden config");
     for args in [
         &["init", "-q", "--initial-branch=main"][..],
         &["add", "-A", "--force"],
@@ -117,6 +118,7 @@ fn init_refuses_a_non_default_template_without_a_terminal() {
         .code(2)
         .stdout("")
         .stderr(predicate::str::contains(".githooks/pre-commit"))
+        .stderr(predicate::str::contains("garden.yaml"))
         .stderr(predicate::str::contains("pass --trust-template"));
     assert!(!target.exists(), "a refused template leaves no directory");
 }

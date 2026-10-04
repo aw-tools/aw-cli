@@ -23,10 +23,12 @@ The primary threats are:
 
   Before copying a template other than the default, `aw init` lists the hooks,
   executables, agent files, `garden.yaml` and links it holds. It shows a
-  directory of more than five files as a count. `aw init` then asks whether to
-  go on, unless the workspace already records that template. `--trust-template`
-  skips the listing and the question. With no terminal, `aw init` prints the
-  listing and exits with status 2.
+  directory of more than five files as a count. The listing names the files that
+  run, not what they pull in: a hook can run any other file, and `garden.yaml`
+  can include one, so reading a listed file means reading what it reaches too.
+  `aw init` then asks whether to go on, unless the workspace already records
+  that template. `--trust-template` skips the listing and the question. With no
+  terminal, `aw init` prints the listing and exits with status 2.
 - **Credential leakage** through a template or manifest URL.
 - **A hung or runaway subprocess** from an unreachable remote.
 

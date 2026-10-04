@@ -2,8 +2,9 @@
 //!
 //! Nothing in a template runs during `aw init`, but its hooks, executables,
 //! garden configuration and agent instructions act later, through
-//! `aw bootstrap` and every agent session in the workspace. A template the user named is therefore shown, and
-//! accepted, before any of it lands in the target.
+//! `aw bootstrap` and every agent session in the workspace. A template the
+//! user named is therefore shown, and accepted, before any of it lands in the
+//! target.
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +12,7 @@ use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::garden;
 use crate::manifest::Template;
 use crate::reporting;
 use crate::template;
@@ -21,10 +23,6 @@ const ACTING_DIRS: &[&str] = &[".githooks", ".claude", ".agents", ".skills"];
 
 /// Agent instruction files, listed wherever they sit.
 const INSTRUCTION_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md"];
-
-/// Root files `aw bootstrap` hands to garden, which runs any value written as
-/// `$ command`.
-const ROOT_CONFIG_FILES: &[&str] = &["garden.yaml"];
 
 /// A top-level directory listing more files than this prints as a count.
 const FOLD_ABOVE: usize = 5;
@@ -178,9 +176,7 @@ fn acts(path: &Path, mode: u32) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| INSTRUCTION_FILES.contains(&name));
-    let configures = path
-        .to_str()
-        .is_some_and(|path| ROOT_CONFIG_FILES.contains(&path));
+    let configures = path == Path::new(garden::CONFIG_FILE);
     in_acting_dir || instructs || configures || mode & 0o111 != 0
 }
 
