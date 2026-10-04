@@ -584,6 +584,27 @@ assert "a url written as a garden command never runs" \
 	"$([ -e "$WORK/pwned" ] && echo yes || echo no)" no
 }
 
+# --- exact tree --------------------------------------------------------------
+case_exact_tree() {
+"$AW" init --trust-template --template "$WORK/seed-template" \
+	"$WORK/exact.workspace" --name exact >/dev/null 2>&1
+cat >>"$WORK/exact.workspace/workspace.toml" <<EOF
+
+[[repo]]
+path = "%docs"
+url = "$WORK/origins/alpha.git"
+
+[[repo]]
+path = "a[l]pha"
+url = "$WORK/origins/beta.git"
+EOF
+"$AW" bootstrap "$WORK/exact.workspace" >"$WORK/exact.log" 2>&1 || true
+assert "a path garden reads as a group is still cloned" \
+	"$([ -d "$WORK/exact.workspace/%docs/.git" ] && echo yes || echo no)" yes
+assert "a path garden reads as a glob is still cloned" \
+	"$([ -d "$WORK/exact.workspace/a[l]pha/.git" ] && echo yes || echo no)" yes
+}
+
 # --- adopt -------------------------------------------------------------------
 case_adopt() {
 "$AW" init --trust-template --template "$WORK/seed-template" \
@@ -1879,6 +1900,7 @@ run_case init case_init
 run_case bootstrap case_bootstrap
 run_case containment case_containment
 run_case literal-values case_literal_values
+run_case exact-tree case_exact_tree
 run_case adopt case_adopt
 run_case doctor case_doctor
 run_case doctor-pinned-branch case_doctor_pinned_branch

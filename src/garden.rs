@@ -99,7 +99,7 @@ pub fn grow(root: &Path, manifest: &Manifest) -> Result<()> {
     let mut cmd = Command::new("garden");
     cmd.arg("-C").arg(root).arg("grow");
     for repo in &manifest.repos {
-        cmd.arg(repo.tree_name());
+        cmd.arg(tree_query(&repo.tree_name()));
     }
     let status = cmd
         .status()
@@ -130,6 +130,21 @@ fn parse_version(text: &str) -> Option<(u32, u32)> {
 /// Absolute checkout path of a manifest entry, resolved against the workspace.
 pub fn checkout_path(root: &Path, relative: &str) -> PathBuf {
     root.join(relative)
+}
+
+/// A garden query matching only the named tree. A bare name finds a garden or
+/// group of that name before a tree and is read as a glob, so `@` restricts the
+/// query to trees and each glob character is bracketed.
+fn tree_query(name: &str) -> String {
+    let mut query = String::from("@");
+    for c in name.chars() {
+        if matches!(c, '*' | '?' | '[' | ']') {
+            let _ = write!(query, "[{c}]");
+        } else {
+            query.push(c);
+        }
+    }
+    query
 }
 
 /// YAML mapping keys are constrained to tree names, which are already
@@ -220,6 +235,13 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("  '$ touch path':"), "{rendered}");
+    }
+
+    #[test]
+    fn queries_only_the_named_tree() {
+        assert_eq!(tree_query("docs"), "@docs");
+        assert_eq!(tree_query("%docs"), "@%docs");
+        assert_eq!(tree_query("a*b?c[d]"), "@a[*]b[?]c[[]d[]]");
     }
 
     #[test]
