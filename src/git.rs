@@ -905,10 +905,6 @@ pub fn version() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-pub fn checked_out_branch(dir: &Path) -> Result<String> {
-    run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|branch| branch.trim().to_owned())
-}
-
 pub fn worktree_root(dir: &Path) -> Result<PathBuf> {
     resolved_git_path(dir, "--show-toplevel", "git worktree root")
 }
