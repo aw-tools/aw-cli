@@ -61,3 +61,11 @@ changelog:
 
 changelog-entry:
   - CHANGELOG.md
+
+# Read only on a push to main: the files the cache keys derive from, plus
+# ci.yml for the Zig and garden versions.
+cache:
+  - .github/workflows/ci.yml
+  - Cargo.lock
+  - Cargo.toml
+  - rust-toolchain.toml
