@@ -560,6 +560,32 @@ pub fn tracked_excluded(dir: &Path, exclude_file: &str) -> Result<Vec<String>> {
     Ok(out.split_terminator('\0').map(ToOwned::to_owned).collect())
 }
 
+/// Whether the repository's own ignore files ignore `path`. The user's global
+/// excludes file is switched off, so the answer depends on the repository alone.
+pub fn is_ignored(dir: &Path, path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "core.excludesFile=/dev/null",
+            "check-ignore",
+            "--quiet",
+        ])
+        .arg(path)
+        .output()
+        .with_context(|| format!("checking ignore rules in {}", dir.display()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => anyhow::bail!(
+            "checking ignore rules failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
 /// Set a repository-local configuration value, returning whether it changed.
 ///
 /// Repository-local configuration is last-wins over user and system scope,

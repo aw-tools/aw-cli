@@ -18,6 +18,10 @@ pub const DEFAULT_URL: &str = "https://github.com/aw-tools/workspace.template.gi
 /// a repeat init must still recognise it as the default.
 const PREVIOUS_DEFAULT_URL: &str = "git@github.com:aw-tools/workspace.template.git";
 
+/// A top-level directory no template allows. A deny-all `.gitignore` ignores
+/// it, as it ignores a member checked out later.
+const UNLISTED_DIRECTORY: &str = "aw-contract-probe";
+
 /// Whether two template URLs name the same source. The default template counts
 /// as one source under either address it has had.
 pub fn same_source(a: &str, b: &str) -> bool {
@@ -275,6 +279,17 @@ fn validate_contract(root: &Path) -> Result<()> {
             "template contract violation: missing regular file {required}"
         );
     }
+
+    // Git applies a directory pattern such as `!*/` only to a directory that
+    // exists, so the probe must exist while git is asked.
+    let probe = root.join(UNLISTED_DIRECTORY);
+    std::fs::create_dir(&probe).context("creating the .gitignore probe")?;
+    let ignored = git::is_ignored(root, UNLISTED_DIRECTORY);
+    std::fs::remove_dir(&probe).context("removing the .gitignore probe")?;
+    anyhow::ensure!(
+        ignored?,
+        "template contract violation: .gitignore must ignore everything by default (start it with `*` and re-include only named paths), so that member checkouts stay untracked"
+    );
 
     let manifest = crate::manifest::Manifest::load(root)?;
     anyhow::ensure!(
@@ -641,8 +656,44 @@ mod tests {
     }
 
     #[test]
+    fn contract_requires_a_deny_all_gitignore() {
+        let temporary = TemporaryDirectory::new().expect("temporary directory");
+        git::init(temporary.path()).expect("git init");
+        std::fs::write(
+            temporary.path().join("workspace.toml"),
+            "[workspace]\nname = \"CHANGEME\"\n",
+        )
+        .expect("manifest fixture");
+        for allowing in ["/target\n", "*\n!*/\n", ""] {
+            std::fs::write(temporary.path().join(".gitignore"), allowing)
+                .expect("gitignore fixture");
+            let error = validate_contract(temporary.path()).expect_err("deny-all is required");
+            assert!(
+                error.to_string().contains("must ignore everything"),
+                "{allowing:?}: {error:#}"
+            );
+        }
+
+        for denying in [
+            "*\n",
+            "/*\n",
+            "**\n",
+            "\u{feff}*\n",
+            "*\n[z-a]\na,b}\n",
+            "*\n!.gitignore\n!context/\n!context/**\n!tmp/\ntmp/**\n!tmp/.keep\n*.env\n",
+        ] {
+            std::fs::write(temporary.path().join(".gitignore"), denying)
+                .expect("gitignore fixture");
+            validate_contract(temporary.path())
+                .unwrap_or_else(|error| panic!("{denying:?}: {error:#}"));
+            assert!(!temporary.path().join(UNLISTED_DIRECTORY).exists());
+        }
+    }
+
+    #[test]
     fn contract_rejects_an_invalid_manifest() {
         let temporary = TemporaryDirectory::new().expect("temporary directory");
+        git::init(temporary.path()).expect("git init");
         std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
         std::fs::write(temporary.path().join("workspace.toml"), "[workspace")
             .expect("manifest fixture");
@@ -655,6 +706,7 @@ mod tests {
     #[test]
     fn contract_requires_the_workspace_name_placeholder() {
         let temporary = TemporaryDirectory::new().expect("temporary directory");
+        git::init(temporary.path()).expect("git init");
         std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
         std::fs::write(
             temporary.path().join("workspace.toml"),

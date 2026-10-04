@@ -10,6 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `aw adopt` records the branch name itself when a tag or another branch shares
   its short name, instead of `heads/main` (#61)
+- `aw init` refuses a template whose `.gitignore` does not deny everything by
+  default, as the template contract requires (#62)
 
 ## [0.4.0] - 2026-10-03
 
