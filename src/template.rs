@@ -7,7 +7,6 @@
 //! loudly rather than being skipped.
 
 use anyhow::{Context, Result};
-use ignore::gitignore::GitignoreBuilder;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -281,18 +280,15 @@ fn validate_contract(root: &Path) -> Result<()> {
         );
     }
 
-    let gitignore =
-        std::fs::read_to_string(root.join(".gitignore")).context("reading template .gitignore")?;
-    let mut builder = GitignoreBuilder::new("");
-    for line in gitignore.lines() {
-        builder
-            .add_line(None, line)
-            .context("parsing template .gitignore")?;
-    }
-    let gitignore = builder.build().context("parsing template .gitignore")?;
+    // Git applies a directory pattern such as `!*/` only to a directory that
+    // exists, so the probe must exist while git is asked.
+    let probe = root.join(UNLISTED_DIRECTORY);
+    std::fs::create_dir(&probe).context("creating the .gitignore probe")?;
+    let ignored = git::is_ignored(root, UNLISTED_DIRECTORY);
+    std::fs::remove_dir(&probe).context("removing the .gitignore probe")?;
     anyhow::ensure!(
-        gitignore.matched(UNLISTED_DIRECTORY, true).is_ignore(),
-        "template contract violation: .gitignore must ignore everything by default (start it with `*`), so that member checkouts stay untracked"
+        ignored?,
+        "template contract violation: .gitignore must ignore everything by default (start it with `*` and re-include only named paths), so that member checkouts stay untracked"
     );
 
     let manifest = crate::manifest::Manifest::load(root)?;
@@ -662,7 +658,12 @@ mod tests {
     #[test]
     fn contract_requires_a_deny_all_gitignore() {
         let temporary = TemporaryDirectory::new().expect("temporary directory");
-        std::fs::write(temporary.path().join("workspace.toml"), "").expect("manifest fixture");
+        git::init(temporary.path()).expect("git init");
+        std::fs::write(
+            temporary.path().join("workspace.toml"),
+            "[workspace]\nname = \"CHANGEME\"\n",
+        )
+        .expect("manifest fixture");
         for allowing in ["/target\n", "*\n!*/\n", ""] {
             std::fs::write(temporary.path().join(".gitignore"), allowing)
                 .expect("gitignore fixture");
@@ -673,21 +674,26 @@ mod tests {
             );
         }
 
-        std::fs::write(
-            temporary.path().join(".gitignore"),
-            "*\n!.gitignore\n!/context/\n",
-        )
-        .expect("gitignore fixture");
-        let error = validate_contract(temporary.path()).expect_err("manifest is empty");
-        assert!(
-            !error.to_string().contains("must ignore everything"),
-            "{error:#}"
-        );
+        for denying in [
+            "*\n",
+            "/*\n",
+            "**\n",
+            "\u{feff}*\n",
+            "*\n[z-a]\na,b}\n",
+            "*\n!.gitignore\n!context/\n!context/**\n!tmp/\ntmp/**\n!tmp/.keep\n*.env\n",
+        ] {
+            std::fs::write(temporary.path().join(".gitignore"), denying)
+                .expect("gitignore fixture");
+            validate_contract(temporary.path())
+                .unwrap_or_else(|error| panic!("{denying:?}: {error:#}"));
+            assert!(!temporary.path().join(UNLISTED_DIRECTORY).exists());
+        }
     }
 
     #[test]
     fn contract_rejects_an_invalid_manifest() {
         let temporary = TemporaryDirectory::new().expect("temporary directory");
+        git::init(temporary.path()).expect("git init");
         std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
         std::fs::write(temporary.path().join("workspace.toml"), "[workspace")
             .expect("manifest fixture");
@@ -700,6 +706,7 @@ mod tests {
     #[test]
     fn contract_requires_the_workspace_name_placeholder() {
         let temporary = TemporaryDirectory::new().expect("temporary directory");
+        git::init(temporary.path()).expect("git init");
         std::fs::write(temporary.path().join(".gitignore"), "*").expect("gitignore fixture");
         std::fs::write(
             temporary.path().join("workspace.toml"),
