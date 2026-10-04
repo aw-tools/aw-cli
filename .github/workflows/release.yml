@@ -117,11 +117,13 @@ jobs:
         with:
           rustflags: ""
           target: ${{ matrix.target }}
+          cache-key: ${{ matrix.target }}
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
+          cache-key: ${{ matrix.target }}
 
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3

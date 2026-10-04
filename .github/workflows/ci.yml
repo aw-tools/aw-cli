@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A cache unread for 7 days is deleted; this run reads main's caches weekly
+  # so a quiet spell does not leave the next pull request to rebuild them.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,11 +28,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Every other job runs only when a file in its area changed; the areas live
-  # in .github/filters.yml.
+  # On a pull request every other job runs only when a file in its area
+  # changed; the areas live in .github/filters.yml. On main, only the jobs that
+  # save a cache run, and only when warm is true.
   changes:
     name: Detect changes
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -43,6 +48,7 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows }}
       changelog: ${{ steps.filter.outputs.changelog }}
       changelog-entry: ${{ steps.filter.outputs.changelog-entry }}
+      warm: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.keys.outputs.cache == 'true' }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,15 +56,23 @@ jobs:
           persist-credentials: false
 
       - name: Decide which areas changed
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        with:
+          filters: .github/filters.yml
+
+      - name: Decide whether a cache key changed
+        if: github.event_name == 'push'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: keys
         with:
           filters: .github/filters.yml
 
   fmt:
     name: Format
     needs: changes
-    if: needs.changes.outputs.fmt == 'true'
+    if: needs.changes.outputs.fmt == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -88,7 +102,7 @@ jobs:
   clippy:
     name: Clippy
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -113,7 +127,7 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -138,7 +152,7 @@ jobs:
   msrv:
     name: MSRV (1.85.0)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -159,7 +173,7 @@ jobs:
   doc:
     name: Doc
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -209,7 +223,7 @@ jobs:
   e2e:
     name: E2E
     needs: changes
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -239,7 +253,7 @@ jobs:
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -261,11 +275,13 @@ jobs:
         with:
           rustflags: ""
           target: ${{ matrix.target }}
+          cache-key: ${{ matrix.target }}
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
+          cache-key: ${{ matrix.target }}
 
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
@@ -416,13 +432,8 @@ jobs:
     steps:
       - name: Check all jobs
         run: |
-          # On a pull request the changes job must succeed and every other job
-          # must succeed or be skipped by its filter. On any other event every
-          # job skips by design, so the required gate stays green on main.
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "Not a pull request; nothing to check."
-            exit 0
-          fi
+          # The changes job must succeed and every other job must succeed or be
+          # skipped by its filter.
           if [[ "${{ needs.changes.result }}" != "success" ]]; then
             echo "Detecting changes ended with result: ${{ needs.changes.result }}"
             exit 1
