@@ -14,21 +14,31 @@ The primary threats are:
 - **A malicious template.** `aw init` clones a template from a URL the user
   gives, or the built-in default, and without an explicit ref seeds from the
   highest stable tag found in that clone, never from anything the remote
-  advertises separately. The template's contents become the workspace, and
-  `aw bootstrap` sets `core.hooksPath` to the template's hook directory when one
-  exists, so a hostile template can run code on the user's next commit.
+  advertises separately. The template's contents become the workspace, so a
+  hostile template can run code in two ways:
+  - `aw bootstrap` runs `garden` on the template's `garden.yaml`, which can run
+    shell commands.
+  - `aw bootstrap` points git's hooks at the template's hook directory, so its
+    hooks run on every commit.
+
+  Before copying a template other than the default, `aw init` lists the hooks,
+  executables, agent files and links it holds. The listing leaves out
+  `garden.yaml`, and it shows a directory of more than five files as a count.
+  `aw init` then asks whether to go on, unless the workspace already records
+  that template. `--trust-template` skips the listing and the question. With no
+  terminal, `aw init` prints the listing and exits with status 2.
 - **Credential leakage** through a template or manifest URL.
 - **A hung or runaway subprocess** from an unreachable remote.
 
 ## Trust boundaries
 
-| Input surface                 | Trust level                      | Validation                                                                                 |
-| ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
-| CLI arguments                 | Trusted (user-invoked)           | Clap argument parsing                                                                      |
-| Template URL and ref          | Partially trusted                | HTTP(S) URLs with embedded credentials, query strings or fragments are rejected            |
-| Template contents (`aw init`) | Untrusted until the user reads   | Not executed by `aw`; hooks only take effect once `aw bootstrap` runs in the new workspace |
-| Manifest (`workspace.toml`)   | Trusted (user-authored, tracked) | TOML parsing via `serde`; repository URLs are passed to `git` and `garden` as arguments    |
-| Git and garden output         | Trusted (local tools)            | Parsed for reporting only                                                                  |
+| Input surface                 | Trust level                      | Validation                                                                                                        |
+| ----------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| CLI arguments                 | Trusted (user-invoked)           | Clap argument parsing                                                                                             |
+| Template URL and ref          | Partially trusted                | HTTP(S) URLs with embedded credentials, query strings or fragments are rejected                                   |
+| Template contents (`aw init`) | Untrusted until the user reads   | Not executed by `aw init`; a template other than the default is listed and confirmed first (see the threat model) |
+| Manifest (`workspace.toml`)   | Trusted (user-authored, tracked) | TOML parsing via `serde`; repository URLs are passed to `git` and `garden` as arguments                           |
+| Git and garden output         | Trusted (local tools)            | Parsed for reporting only                                                                                         |
 
 ## Security measures
 
@@ -52,8 +62,10 @@ The primary threats are:
 ## Assumptions
 
 - The user reads a template before running `aw bootstrap` inside it, the same
-  way they would read a repository before running its build. A first-run consent
-  prompt and a content check against the tag are planned and not yet built.
+  way they would read a repository before running its build. `aw` checks no
+  signature, and nothing checks the commit the first `aw init` takes against a
+  known-good one. A later `aw init` refuses a template that resolves to a
+  different commit. Whether a template is trustworthy is the user's call.
 - `git` and `garden` on `PATH` are the user's own installs and are trusted.
 - Remotes are reached over the transports git is configured for; `aw` adds no
   transport of its own.
