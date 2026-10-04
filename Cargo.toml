@@ -17,7 +17,8 @@ path = "src/main.rs"
 # Error context across subprocess and filesystem boundaries.
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-# The gitignore matcher alone, for `.awlintignore`; its directory walker is unused.
+# The gitignore matcher alone, for `.awlintignore` and the template contract; its
+# directory walker is unused.
 ignore = "0.4"
 # Group-wide signalling: std's Child::kill reaches only the leader PID, so
 # terminating the child's whole process group on a timeout needs a negative-PID

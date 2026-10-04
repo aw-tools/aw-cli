@@ -7,6 +7,7 @@
 //! loudly rather than being skipped.
 
 use anyhow::{Context, Result};
+use ignore::gitignore::GitignoreBuilder;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,6 +18,10 @@ pub const DEFAULT_URL: &str = "https://github.com/aw-tools/workspace.template.gi
 /// The default before it moved to HTTPS. Workspaces created then record it, and
 /// a repeat init must still recognise it as the default.
 const PREVIOUS_DEFAULT_URL: &str = "git@github.com:aw-tools/workspace.template.git";
+
+/// A top-level directory no template allows. A deny-all `.gitignore` ignores
+/// it, as it ignores a member checked out later.
+const UNLISTED_DIRECTORY: &str = "aw-contract-probe";
 
 /// Whether two template URLs name the same source. The default template counts
 /// as one source under either address it has had.
@@ -275,6 +280,20 @@ fn validate_contract(root: &Path) -> Result<()> {
             "template contract violation: missing regular file {required}"
         );
     }
+
+    let gitignore =
+        std::fs::read_to_string(root.join(".gitignore")).context("reading template .gitignore")?;
+    let mut builder = GitignoreBuilder::new("");
+    for line in gitignore.lines() {
+        builder
+            .add_line(None, line)
+            .context("parsing template .gitignore")?;
+    }
+    let gitignore = builder.build().context("parsing template .gitignore")?;
+    anyhow::ensure!(
+        gitignore.matched(UNLISTED_DIRECTORY, true).is_ignore(),
+        "template contract violation: .gitignore must ignore everything by default (start it with `*`), so that member checkouts stay untracked"
+    );
 
     let manifest = crate::manifest::Manifest::load(root)?;
     anyhow::ensure!(
@@ -638,6 +657,32 @@ mod tests {
             .expect("link fixture");
         let linked = validate_contract(temporary.path()).expect_err("link is not a regular file");
         assert!(linked.to_string().contains(".gitignore"));
+    }
+
+    #[test]
+    fn contract_requires_a_deny_all_gitignore() {
+        let temporary = TemporaryDirectory::new().expect("temporary directory");
+        std::fs::write(temporary.path().join("workspace.toml"), "").expect("manifest fixture");
+        for allowing in ["/target\n", "*\n!*/\n", ""] {
+            std::fs::write(temporary.path().join(".gitignore"), allowing)
+                .expect("gitignore fixture");
+            let error = validate_contract(temporary.path()).expect_err("deny-all is required");
+            assert!(
+                error.to_string().contains("must ignore everything"),
+                "{allowing:?}: {error:#}"
+            );
+        }
+
+        std::fs::write(
+            temporary.path().join(".gitignore"),
+            "*\n!.gitignore\n!/context/\n",
+        )
+        .expect("gitignore fixture");
+        let error = validate_contract(temporary.path()).expect_err("manifest is empty");
+        assert!(
+            !error.to_string().contains("must ignore everything"),
+            "{error:#}"
+        );
     }
 
     #[test]
