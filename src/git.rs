@@ -905,10 +905,6 @@ pub fn version() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-pub fn checked_out_branch(dir: &Path) -> Result<String> {
-    run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|branch| branch.trim().to_owned())
-}
-
 pub fn worktree_root(dir: &Path) -> Result<PathBuf> {
     resolved_git_path(dir, "--show-toplevel", "git worktree root")
 }
@@ -1271,6 +1267,33 @@ mod tests {
             );
             std::fs::remove_file(&path).unwrap();
         }
+    }
+
+    #[test]
+    fn current_branch_ignores_a_tag_sharing_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path()).unwrap();
+        run(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "--message=initial",
+            ],
+        )
+        .unwrap();
+        run(dir.path(), &["tag", "trunk"]).unwrap();
+        assert_eq!(
+            current_branch(dir.path()).unwrap().as_deref(),
+            Some("trunk")
+        );
     }
 
     #[test]

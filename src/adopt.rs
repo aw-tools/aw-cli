@@ -78,13 +78,9 @@ pub fn run(path: &Path) -> Result<()> {
     repo.url = git::config_value(&checkout, "remote.origin.url")?
         .filter(|url| !url.trim().is_empty())
         .with_context(|| format!("checkout {} has no origin remote", checkout.display()))?;
-    let branch = git::checked_out_branch(&checkout)
+    let branch = git::current_branch(&checkout)?
+        .filter(|branch| !branch.is_empty())
         .with_context(|| format!("checkout {} has no checked-out branch", checkout.display()))?;
-    anyhow::ensure!(
-        !branch.is_empty(),
-        "checkout {} has no checked-out branch",
-        checkout.display()
-    );
     repo.branch = Some(branch);
     manifest::append_repo(&root, &repo)?;
     println!(

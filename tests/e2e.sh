@@ -574,6 +574,9 @@ url = "$WORK/origins/beta.git"
 # url = "git@example.invalid:owner/example.git"
 EOF
 git clone -q "$WORK/origins/alpha.git" "$WORK/adopt.workspace/members/alpha"
+# A tag whose short name collides with the branch must not change the branch
+# name adopt records.
+git -C "$WORK/adopt.workspace/members/alpha" tag main
 COMMITS_BEFORE="$(git -C "$WORK/adopt.workspace" rev-list --all --count)"
 
 (
