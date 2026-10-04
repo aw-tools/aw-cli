@@ -12,10 +12,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its short name, instead of `heads/main` (#61)
 - `aw init` refuses a template whose `.gitignore` does not deny everything by
   default, as the template contract requires (#62)
+
+### Security
+
 - `aw init` lists a template's `garden.yaml` before asking to use it, because
   `aw bootstrap` hands it to garden, which can run commands from it (#65)
-- `aw bootstrap` passes every `workspace.toml` value to garden as written, so
+- `aw bootstrap` escapes the `workspace.toml` values it writes for garden, so
   garden runs none of them as a shell command (#66)
+- `aw` refuses a repository path starting with `~`, which garden would expand to
+  a directory outside the workspace (#66)
 
 ## [0.4.0] - 2026-10-03
 

@@ -661,6 +661,10 @@ fn manifest_marker(dir: &Path) -> Result<bool> {
 /// prevent.
 fn check_contained(path: &str) -> Result<()> {
     anyhow::ensure!(!path.trim().is_empty(), "repo path is empty");
+    anyhow::ensure!(
+        !path.starts_with('~'),
+        "repo path {path} starts with `~`, which garden expands to the home directory; paths must be inside the workspace"
+    );
     let path = Path::new(path);
     anyhow::ensure!(
         path.is_relative(),
@@ -716,6 +720,12 @@ mod tests {
     fn rejects_parent_traversal() {
         let err = check_contained("../skills").expect_err("escapes the workspace");
         assert!(err.to_string().contains("escapes the workspace"));
+    }
+
+    #[test]
+    fn rejects_a_home_relative_path() {
+        let err = check_contained("~/skills").expect_err("garden expands it to the home directory");
+        assert!(err.to_string().contains("starts with `~`"));
     }
 
     #[test]
