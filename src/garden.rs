@@ -133,12 +133,13 @@ pub fn checkout_path(root: &Path, relative: &str) -> PathBuf {
 }
 
 /// A garden query matching only the named tree. A bare name finds a garden or
-/// group of that name before a tree and is read as a glob, so `@` restricts the
-/// query to trees and each glob character is bracketed.
+/// group of that name before a tree and is read as a glob, and a query holding
+/// `::` is read as a graft, so `@` restricts the query to trees and each glob
+/// character and colon is bracketed.
 fn tree_query(name: &str) -> String {
     let mut query = String::from("@");
     for c in name.chars() {
-        if matches!(c, '*' | '?' | '[' | ']') {
+        if matches!(c, '*' | '?' | '[' | ']' | ':') {
             let _ = write!(query, "[{c}]");
         } else {
             query.push(c);
@@ -147,9 +148,8 @@ fn tree_query(name: &str) -> String {
     query
 }
 
-/// YAML mapping keys are constrained to tree names, which are already
-/// alphanumeric-with-dashes, but quote defensively so a hand-edited manifest
-/// cannot produce a malformed fragment.
+/// Tree names keep every character of the path except `/` and `.`, so a key
+/// can hold `:`, `#` or a quote and must be quoted.
 fn yaml_key(value: &str) -> String {
     yaml_str(value)
 }
@@ -242,6 +242,7 @@ mod tests {
         assert_eq!(tree_query("docs"), "@docs");
         assert_eq!(tree_query("%docs"), "@%docs");
         assert_eq!(tree_query("a*b?c[d]"), "@a[*]b[?]c[[]d[]]");
+        assert_eq!(tree_query("a::b"), "@a[:][:]b");
     }
 
     #[test]

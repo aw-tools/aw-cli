@@ -597,12 +597,18 @@ url = "$WORK/origins/alpha.git"
 [[repo]]
 path = "a[l]pha"
 url = "$WORK/origins/beta.git"
+
+[[repo]]
+path = "g::amma"
+url = "$WORK/origins/gamma.git"
 EOF
 "$AW" bootstrap "$WORK/exact.workspace" >"$WORK/exact.log" 2>&1 || true
 assert "a path garden reads as a group is still cloned" \
 	"$([ -d "$WORK/exact.workspace/%docs/.git" ] && echo yes || echo no)" yes
 assert "a path garden reads as a glob is still cloned" \
 	"$([ -d "$WORK/exact.workspace/a[l]pha/.git" ] && echo yes || echo no)" yes
+assert "a path garden reads as a graft is still cloned" \
+	"$([ -d "$WORK/exact.workspace/g::amma/.git" ] && echo yes || echo no)" yes
 }
 
 # --- adopt -------------------------------------------------------------------
