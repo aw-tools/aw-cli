@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-04
+
 ### Fixed
 
 - `aw adopt` records the branch name itself when a tag or another branch shares
