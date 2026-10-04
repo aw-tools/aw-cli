@@ -256,8 +256,24 @@ impl Manifest {
         if let Some(block) = &self.template {
             block.provenance()?;
         }
+        if let Some(identity) = &self.identity {
+            for (field, value) in [
+                ("identity name", &identity.name),
+                ("identity email", &identity.email),
+                ("identity signingkey", &identity.signingkey),
+            ] {
+                if let Some(value) = value {
+                    check_printable(field, value)?;
+                }
+            }
+        }
         let mut seen = std::collections::BTreeSet::new();
         for repo in &self.repos {
+            check_printable("repo path", &repo.path)?;
+            check_printable(&format!("url of repo {}", repo.path), &repo.url)?;
+            if let Some(branch) = &repo.branch {
+                check_printable(&format!("branch of repo {}", repo.path), branch)?;
+            }
             check_contained(&repo.path)?;
             let tree = repo.tree_name();
             anyhow::ensure!(
@@ -562,7 +578,11 @@ pub fn append_repo(root: &Path, repo: &Repo) -> Result<()> {
     }
     repos.push(table);
 
-    replace_atomically(&path, document.to_string().as_bytes(), &metadata)
+    let updated = document.to_string();
+    let manifest: Manifest = toml::from_str(&updated)
+        .with_context(|| format!("parsing updated manifest {}", path.display()))?;
+    manifest.validate()?;
+    replace_atomically(&path, updated.as_bytes(), &metadata)
 }
 
 fn replace_atomically(path: &Path, contents: &[u8], metadata: &Metadata) -> Result<()> {
@@ -652,6 +672,20 @@ fn manifest_marker(dir: &Path) -> Result<bool> {
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("reading metadata for {}", path.display())),
     }
+}
+
+/// Every value written to the generated garden file must reach garden unchanged.
+/// A line break inside a quoted YAML scalar folds to a space or breaks the file,
+/// so refusing only `\n` would still let `\r` and others through.
+/// The error names the position, never the value: a url may embed a token.
+fn check_printable(field: &str, value: &str) -> Result<()> {
+    if let Some(position) = value.chars().position(char::is_control) {
+        anyhow::bail!(
+            "{field} contains a control character at position {}; manifest values must be printable text",
+            position + 1
+        );
+    }
+    Ok(())
 }
 
 /// A workspace contains everything it manages. A checkout that escapes the root
@@ -757,6 +791,29 @@ mod tests {
                 .expect("read test directory")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn append_refuses_a_repo_the_manifest_would_reject() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join(FILENAME);
+        let original = "[workspace]\nname = \"w\"\n";
+        std::fs::write(&path, original).expect("write original manifest");
+        let repo = Repo {
+            path: "member".into(),
+            url: "u\n".into(),
+            branch: None,
+            skills: None,
+            agents: None,
+        };
+
+        let err = append_repo(temp.path(), &repo).expect_err("control character");
+
+        assert!(err.to_string().contains("control character"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read preserved manifest"),
+            original
         );
     }
 
@@ -970,6 +1027,29 @@ mod tests {
         .expect("fixture parses");
         let err = manifest.validate().expect_err("colliding tree names");
         assert!(err.to_string().contains("collides"), "{err}");
+    }
+
+    #[test]
+    fn rejects_control_characters_in_garden_values() {
+        for (fragment, field) in [
+            ("[[repo]]\npath = \"a\\nb\"\nurl = \"u\"\n", "repo path"),
+            ("[[repo]]\npath = \"a\"\nurl = \"u\\n\"\n", "url of repo a"),
+            (
+                "[[repo]]\npath = \"a\"\nurl = \"u\"\nbranch = \"m\\tx\"\n",
+                "branch of repo a",
+            ),
+            ("[identity]\nname = \"n\\u0007\"\n", "identity name"),
+            ("[identity]\nemail = \"e\\r\"\n", "identity email"),
+            ("[identity]\nsigningkey = \"k\\n\"\n", "identity signingkey"),
+        ] {
+            let manifest: Manifest =
+                toml::from_str(&format!("[workspace]\nname = \"w\"\n{fragment}"))
+                    .expect("fixture parses");
+            let err = manifest.validate().expect_err("control character");
+            assert!(err.to_string().starts_with(field), "{err}");
+            assert!(err.to_string().contains("control character"), "{err}");
+            assert!(!err.to_string().contains('"'), "{err}");
+        }
     }
 
     #[test]

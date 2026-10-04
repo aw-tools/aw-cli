@@ -12,6 +12,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its short name, instead of `heads/main` (#61)
 - `aw init` refuses a template whose `.gitignore` does not deny everything by
   default, as the template contract requires (#62)
+- `aw bootstrap` clones a path holding `*`, `?`, `[`, `]`, `:` or a leading `%`;
+  `aw` refuses control characters in repository and identity values (#67)
 
 ### Security
 
