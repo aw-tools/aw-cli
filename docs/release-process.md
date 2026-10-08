@@ -6,17 +6,17 @@ a failed cut and withdraw it.
 ## Overview
 
 A release starts when you push a `v*` tag from `main`. The release workflow runs
-the quality gate with `just ci` on the tagged commit, cross-compiles four
+the quality gate with `just ci` on the tagged commit, cross-compiles five
 binaries, writes a `SHA256SUMS` file and publishes a GitHub release. The release
 body is the matching section of `CHANGELOG.md`. The publish job waits at the
 `release` GitHub Environment for the owner's approval, so push permission alone
 cannot ship a release.
 
-The four targets are `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
-`aarch64-apple-darwin` and `x86_64-apple-darwin`. Each archive is named
-`aw-<target>.tar.gz` and holds the binary, both licence files and the README.
-The name carries no version, so the README's install snippet points at
-`releases/latest/download/` and never goes stale.
+The five targets are `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and `x86_64-apple-darwin`.
+Each archive is named `aw-<target>.tar.gz` and holds the binary, both licence
+files and the README. The name carries no version, so the README's install
+snippet points at `releases/latest/download/` and never goes stale.
 
 ## Prerequisites
 
@@ -320,7 +320,10 @@ attributed to that app.
 
 ## Cross-compile workarounds
 
-None are known. CI cross-compiles all four targets with `cargo zigbuild` on
-every pull request, and the release workflow reuses those steps. When a target
-needs a workaround, record it here with the failure it answers and the condition
-for removing it.
+None are known. CI cross-compiles five targets with `cargo zigbuild` when the
+Rust impact filter matches or caches need warming. Release workflow changes
+match that filter.
+
+`just ci` omits cross-compilation and the Rust 1.85.0 check. Before tagging,
+confirm that all five builds passed on the preparation pull request. Record
+workarounds here with their failure and removal condition.

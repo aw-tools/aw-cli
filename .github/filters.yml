@@ -8,6 +8,7 @@ ci: &ci
 
 rust: &rust
   - *ci
+  - .github/workflows/release.yml
   - Cargo.lock
   - Cargo.toml
   - rust-toolchain.toml
