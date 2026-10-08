@@ -324,10 +324,6 @@ None are known. CI cross-compiles five targets with `cargo zigbuild` when the
 Rust impact filter matches or caches need warming. Release workflow changes
 match that filter.
 
-CI packages the Arm Linux binary and runs it on an Arm runner after checking its
-architecture and static linking. The release workflow uses the same toolchain
-and archive layout.
-
 `just ci` omits cross-compilation and the Rust 1.85.0 check. Before tagging,
-confirm that five builds and the Arm archive job passed on the preparation pull
-request. Record workarounds here with their failure and removal condition.
+confirm that all five builds passed on the preparation pull request. Record
+workarounds here with their failure and removal condition.
