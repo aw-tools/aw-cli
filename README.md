@@ -38,9 +38,11 @@ tar xzf "aw-$target.tar.gz"
 install -m 755 aw ~/.local/bin/aw
 ```
 
-The other targets are `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
-`x86_64-apple-darwin`. On macOS the checksum tool is
+Other targets: `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-apple-darwin`. On macOS, use
 `shasum -a 256 -c SHA256SUMS --ignore-missing`.
+
+Arm Linux: `aarch64-unknown-linux-musl` (from 0.5.0).
 
 To uninstall, delete the binary: `aw` writes nothing outside the workspaces you
 create.

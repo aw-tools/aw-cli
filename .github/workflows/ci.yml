@@ -261,6 +261,7 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
           - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
           - aarch64-apple-darwin
           - x86_64-apple-darwin
     steps:
@@ -289,6 +290,65 @@ jobs:
 
       - name: Cross-compile the binary
         run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Package the ARM Linux tarball
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          archive="aw-${TARGET}.tar.gz"
+          cp "target/${TARGET}/release/aw" "${stage}/aw"
+          cp LICENSE-MIT LICENSE-APACHE README.md "${stage}/"
+          tar -czf "${archive}" -C "${stage}" .
+          mkdir -p dist
+          mv "${archive}" "dist/${archive}"
+
+      - name: Upload the ARM Linux archive
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aw-aarch64-unknown-linux-musl
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  arm-smoke:
+    name: ARM Linux archive
+    needs: [changes, cross-compile]
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Download the ARM Linux archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aw-aarch64-unknown-linux-musl
+
+      - name: Check and run the packaged binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -tzf aw-aarch64-unknown-linux-musl.tar.gz
+          tar -xzf aw-aarch64-unknown-linux-musl.tar.gz
+          test -x aw
+          test -f LICENSE-MIT
+          test -f LICENSE-APACHE
+          test -f README.md
+          file aw
+          readelf -h aw > elf-header.txt
+          cat elf-header.txt
+          grep -Eq 'Machine: +AArch64' elf-header.txt
+          readelf -l aw > elf-program.txt
+          readelf -d aw > elf-dynamic.txt
+          cat elf-program.txt elf-dynamic.txt
+          if grep -q INTERP elf-program.txt || grep -q NEEDED elf-dynamic.txt; then
+            echo "ARM Linux binary must be statically linked."
+            exit 1
+          fi
+          ./aw --version
+          ./aw help init
 
   prose:
     name: Prose
@@ -423,6 +483,7 @@ jobs:
       - deny
       - e2e
       - cross-compile
+      - arm-smoke
       - prose
       - scripts
       - workflows
@@ -437,7 +498,7 @@ jobs:
             echo "Detecting changes ended with result: ${{ needs.changes.result }}"
             exit 1
           fi
-          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.prose.result }}" "${{ needs.scripts.result }}" "${{ needs.workflows.result }}" "${{ needs.changelog.result }}")
+          results=("${{ needs.fmt.result }}" "${{ needs.clippy.result }}" "${{ needs.test.result }}" "${{ needs.msrv.result }}" "${{ needs.doc.result }}" "${{ needs.deny.result }}" "${{ needs.e2e.result }}" "${{ needs.cross-compile.result }}" "${{ needs.arm-smoke.result }}" "${{ needs.prose.result }}" "${{ needs.scripts.result }}" "${{ needs.workflows.result }}" "${{ needs.changelog.result }}")
           for r in "${results[@]}"; do
             if [[ "$r" == "success" || "$r" == "skipped" ]]; then continue; fi
             echo "Job failed with result: $r"
