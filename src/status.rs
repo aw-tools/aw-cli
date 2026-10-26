@@ -559,6 +559,7 @@ impl ReportSection for AgentMemorySection {
         let problem = match &self.finding {
             None => return,
             Some(memory::Finding::Enabled) => "does not set autoMemoryEnabled to false".to_owned(),
+            Some(memory::Finding::InvalidJson { error }) => format!("is not valid JSON: {error}"),
             Some(memory::Finding::Unreadable { error }) => format!("could not be read: {error}"),
         };
         writeln!(

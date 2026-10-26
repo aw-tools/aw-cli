@@ -16,17 +16,27 @@ pub const SETTINGS_FILE: &str = ".claude/settings.json";
 pub enum Finding {
     /// The file exists and does not set `autoMemoryEnabled` to `false`.
     Enabled,
-    /// The file exists but cannot be read or parsed as JSON.
+    /// The file was read but is not valid JSON.
+    InvalidJson { error: String },
+    /// The file exists but cannot be read.
     Unreadable { error: String },
 }
 
 /// The memory finding for the workspace at `root`, or `None` when its settings
 /// file is absent or sets `autoMemoryEnabled` to JSON `false`. Any other value,
-/// the string `"false"` included, leaves memory on.
+/// the string `"false"` included, leaves memory on. A `.claude` that is not a
+/// directory leaves the file absent.
 pub fn check(root: &Path) -> Option<Finding> {
     let text = match std::fs::read_to_string(root.join(SETTINGS_FILE)) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return None;
+        }
         Err(error) => {
             return Some(Finding::Unreadable {
                 error: error.to_string(),
@@ -36,7 +46,7 @@ pub fn check(root: &Path) -> Option<Finding> {
     match serde_json::from_str::<Value>(&text) {
         Ok(settings) if settings.get("autoMemoryEnabled") == Some(&Value::Bool(false)) => None,
         Ok(_) => Some(Finding::Enabled),
-        Err(error) => Some(Finding::Unreadable {
+        Err(error) => Some(Finding::InvalidJson {
             error: error.to_string(),
         }),
     }
@@ -86,8 +96,25 @@ mod tests {
     }
 
     #[test]
-    fn malformed_json_is_an_unreadable_finding() {
+    fn malformed_json_is_an_invalid_json_finding() {
         let root = workspace_with(Some(r#"{"autoMemoryEnabled": false"#));
+        assert!(matches!(
+            check(root.path()),
+            Some(Finding::InvalidJson { .. })
+        ));
+    }
+
+    #[test]
+    fn a_claude_file_in_place_of_the_directory_is_no_finding() {
+        let root = workspace_with(None);
+        std::fs::write(root.path().join(".claude"), "").expect("write .claude file");
+        assert_eq!(check(root.path()), None);
+    }
+
+    #[test]
+    fn a_settings_path_that_cannot_be_read_is_an_unreadable_finding() {
+        let root = workspace_with(None);
+        std::fs::create_dir_all(root.path().join(SETTINGS_FILE)).expect("settings dir");
         assert!(matches!(
             check(root.path()),
             Some(Finding::Unreadable { .. })

@@ -660,6 +660,9 @@ fn doctor_agent_memory(root: &Path) {
     let settings = root.join(memory::SETTINGS_FILE);
     let report = match finding {
         memory::Finding::Enabled => reporting::doctor_agent_memory_enabled(&settings),
+        memory::Finding::InvalidJson { error } => {
+            reporting::doctor_agent_memory_invalid_json(&settings, &error)
+        }
         memory::Finding::Unreadable { error } => {
             reporting::doctor_agent_memory_unreadable(&settings, &error)
         }
