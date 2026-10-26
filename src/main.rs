@@ -14,6 +14,7 @@ mod garden;
 mod git;
 mod lint;
 mod manifest;
+mod memory;
 mod reporting;
 mod skills;
 mod status;
@@ -62,12 +63,12 @@ enum Verb {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
-    /// Check the environment, remotes, and link health.
+    /// Check the environment, remotes, link health, and agent memory.
     Doctor {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
-    /// Report repository presence and working-tree state.
+    /// Report repository presence, working-tree state, and agent memory.
     Status {
         /// Emit JSON (unstable during incubation).
         #[arg(long)]
@@ -178,7 +179,12 @@ fn run() -> Result<bool> {
             init(dir, name, template.as_deref(), answer).map(|()| true)
         }
         Verb::Bootstrap { dir } => bootstrap(&manifest::resolve_root(dir)?),
-        Verb::Doctor { dir } => doctor(&manifest::resolve_root(dir)?),
+        Verb::Doctor { dir } => {
+            let root = manifest::resolve_root(dir)?;
+            let ok = doctor(&root)?;
+            doctor_agent_memory(&root);
+            Ok(ok)
+        }
         Verb::Status {
             dir,
             json,
@@ -644,6 +650,22 @@ fn doctor(root: &Path) -> Result<bool> {
     }
 
     Ok(ok)
+}
+
+/// A warning only: it prints and never fails `doctor`.
+fn doctor_agent_memory(root: &Path) {
+    let Some(finding) = memory::check(root) else {
+        return;
+    };
+    let settings = root.join(memory::SETTINGS_FILE);
+    let report = match finding {
+        memory::Finding::Enabled => reporting::doctor_agent_memory_enabled(&settings),
+        memory::Finding::Unreadable { error } => {
+            reporting::doctor_agent_memory_unreadable(&settings, &error)
+        }
+    };
+    println!("{}", reporting::doctor_warn(&report));
+    println!("{}", reporting::doctor_remedy(&report));
 }
 
 #[cfg(test)]

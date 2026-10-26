@@ -62,8 +62,8 @@ so both must be on your `PATH`. `aw doctor` reports what is missing.
 | ----------------- | -------------------------------------------------------------------------------- |
 | `aw init`         | Create a new workspace from a cloned template                                    |
 | `aw bootstrap`    | Clone missing repositories, converge configuration, link skills                  |
-| `aw doctor`       | Check the environment, remotes and link health                                   |
-| `aw status`       | Report repository presence, working-tree state and upstream distance             |
+| `aw doctor`       | Check the environment, remotes, link health and agent memory                     |
+| `aw status`       | Report repository presence, working trees, upstream distance and agent memory    |
 | `aw sync`         | Fetch the workspace layer and every managed repository, report change            |
 | `aw fast-forward` | Fetch, then fast-forward each clean repository on its default branch; alias `ff` |
 | `aw adopt`        | Add an existing checkout to the workspace manifest                               |
