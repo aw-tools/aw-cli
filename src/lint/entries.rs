@@ -25,6 +25,8 @@ pub struct Entry<'a> {
     pub supersedes: Vec<u64>,
     /// The entries its superseded-by marks name.
     pub superseded_by: Vec<u64>,
+    /// The date its title carries.
+    pub date: Option<String>,
 }
 
 const SUPERSEDES: &[&str] = &["**Supersedes:**"];
@@ -219,6 +221,7 @@ fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) ->
         words: Vec::new(),
         supersedes: Vec::new(),
         superseded_by: Vec::new(),
+        date: None,
     };
     let mut index = 0;
     while index < words.len() {
@@ -242,7 +245,22 @@ fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) ->
             index += 1;
         }
     }
+    entry.date = title_date(&entry.words.join(" ")).map(str::to_owned);
     entry
+}
+
+/// The first `YYYY-MM-DD` in the title of an entry's text, its first bold
+/// run.
+fn title_date(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("**")?;
+    let (title, _) = rest.split_once("**")?;
+    let at = title.as_bytes().windows(10).position(|window| {
+        window.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            _ => byte.is_ascii_digit(),
+        })
+    })?;
+    Some(&title[at..at + 10])
 }
 
 fn labelled(words: &[(&str, bool)], label: &[&str]) -> bool {
@@ -641,6 +659,44 @@ mod tests {
                 .supersedes
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn the_title_date_is_the_first_date_in_the_first_bold_run() {
+        assert_eq!(
+            title_date("**Ruling (2026-10-26, after 2026-10-25).** Text."),
+            Some("2026-10-26")
+        );
+        assert_eq!(title_date("Text **2026-10-26** more."), Some("2026-10-26"));
+        for text in [
+            "**Ruling.** Recorded 2026-10-26.",
+            "Ruling recorded 2026-10-26.",
+            "**Ruling (2026-10-26).",
+            "**Ruling (2026-1-26).**",
+            "**Ruling (20261026).**",
+            "****",
+            "",
+        ] {
+            assert_eq!(title_date(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_entry_takes_its_date_from_a_title_wrapped_across_lines() {
+        let body = parse("5. **A ruling wrapped\n   over two lines (2026-10-26).** Text.\n");
+        assert_eq!(body.entries[0].date.as_deref(), Some("2026-10-26"));
+    }
+
+    #[test]
+    fn a_title_with_a_nested_bold_run_carries_no_date() {
+        let body = parse("5. **A ruling **and** its date (2026-10-26).** Text.\n");
+        assert_eq!(body.entries[0].date, None);
+    }
+
+    #[test]
+    fn a_mark_before_the_title_is_not_the_title() {
+        let body = parse("5. **Supersedes:** 3. **A ruling (2026-10-26).** Text.\n");
+        assert_eq!(body.entries[0].date.as_deref(), Some("2026-10-26"));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! `HEAD`, read from the model alone.
 //!
 //! As with the snapshot rules, no rule names a kind (clause 2.5). The SHOULD
-//! clauses 3.4 and 3.5 never fail.
+//! clauses 3.4 and 3.5 never fail. Under the `supersession-marks` proposal, a
+//! warning outside the contract joins them.
 
 use super::entries;
 use super::model::{Artefact, Change, Head, Model};
@@ -11,6 +12,7 @@ use super::rule::Rule;
 use super::rules::{
     self, BINDING, CLOSED, EPHEMERAL, EPHEMERAL_TERMINAL, EPISODIC, Finding, OPEN, declared,
 };
+use std::collections::BTreeSet;
 
 /// Each class's machine from the contract's section 3, as the moves it allows.
 const MOVES: [(&str, &str, &str); 6] = [
@@ -50,6 +52,9 @@ pub fn check(change: &Change, proposals: &[Proposal]) -> Vec<Finding> {
     check_transitions(&change.staged, head, proposals, &mut found);
     check_disposals(&change.staged, head, &mut found);
     check_closures(&change.staged, head, &mut found);
+    if proposals.contains(&Proposal::SupersessionMarks) {
+        check_same_day(&change.staged, head, &mut found);
+    }
     findings
 }
 
@@ -223,6 +228,61 @@ fn check_closures(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule
             }
         }
     }
+}
+
+/// An entry the commit adds superseding one that carries the same date, once
+/// for each entry so named. An entry is added when no binding artefact at
+/// `HEAD` holds its number, so a mark joining a recorded entry never warns.
+fn check_same_day(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, String)) {
+    let recorded: BTreeSet<u64> = binding_entries(&head.model)
+        .into_iter()
+        .map(|(_, entry)| entry.number)
+        .collect();
+    let entries = binding_entries(staged);
+    for (path, entry) in &entries {
+        let Some(date) = &entry.date else {
+            continue;
+        };
+        if recorded.contains(&entry.number) {
+            continue;
+        }
+        let named: BTreeSet<u64> = entry.supersedes.iter().copied().collect();
+        for earlier in named {
+            let same_day = entries
+                .iter()
+                .any(|(_, other)| other.number == earlier && other.date.as_ref() == Some(date));
+            if same_day {
+                found(
+                    path,
+                    Rule::EntrySupersedesSameDay,
+                    format!(
+                        "entry {} supersedes entry {earlier}, which carries the same date, {date}",
+                        entry.number
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// Every entry of the model's binding artefacts, binding by class whatever
+/// their status, with the path of the artefact holding it.
+fn binding_entries(model: &Model) -> Vec<(&str, entries::Entry<'_>)> {
+    model
+        .artefacts
+        .iter()
+        .filter(|artefact| {
+            declared(artefact, "kind")
+                .and_then(|kind| model.registry.kinds.get(kind))
+                .is_some_and(|class| class == BINDING)
+        })
+        .flat_map(|artefact| {
+            entries::parse(&artefact.body)
+                .entries
+                .into_iter()
+                .map(|entry| (artefact.path.as_str(), entry))
+        })
+        .collect()
 }
 
 /// The artefact at `HEAD` a staged path continues: the file it was renamed
@@ -473,5 +533,157 @@ class = \"binding\"
             )
         );
         assert_eq!(rewritten(before, "Intro\ntext.\n\n1. One.\n"), None);
+    }
+
+    /// The model of binding artefacts `notes/0.md` onwards, holding `bodies`.
+    fn logs(bodies: &[&str]) -> Model {
+        let registry = RegistryFile::parse(REGISTRY, "registry").unwrap();
+        let files = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                (
+                    format!("notes/{index}.md"),
+                    format!("---\nkind: log\nstatus: active\n---\n{body}"),
+                )
+            })
+            .collect();
+        layout::read(&registry, files)
+    }
+
+    /// The same-day warnings, by path and message, of a commit taking binding
+    /// artefacts from `before`, or from no `HEAD`, to `after`, under
+    /// `proposals`.
+    fn same_day(
+        before: Option<&[&str]>,
+        after: &[&str],
+        proposals: &[Proposal],
+    ) -> Vec<(String, String)> {
+        let change = Change {
+            staged: logs(after),
+            head: before.map(|before| Head {
+                model: logs(before),
+                renames: BTreeMap::new(),
+                deleted: BTreeSet::new(),
+            }),
+        };
+        check(&change, proposals)
+            .into_iter()
+            .filter(|finding| finding.rule == Rule::EntrySupersedesSameDay)
+            .map(|finding| (finding.path, finding.message))
+            .collect()
+    }
+
+    const RECORDED: &str = "1. **Use TOML (2026-10-26).** One.\n";
+
+    /// `RECORDED` stamped superseded by an added entry 2 titled `title`.
+    fn superseded_by(title: &str) -> String {
+        format!(
+            "1. **Use TOML (2026-10-26).** One. **Superseded by:** 2.\n\
+             2. {title} Two. **Supersedes:** 1.\n"
+        )
+    }
+
+    const MARKS: &[Proposal] = &[Proposal::SupersessionMarks];
+
+    #[test]
+    fn an_added_entry_superseding_one_of_its_date_warns_once() {
+        assert_eq!(
+            same_day(
+                Some(&[RECORDED]),
+                &[&superseded_by("**Use JSON (2026-10-26).**")],
+                MARKS
+            ),
+            [(
+                "notes/0.md".to_owned(),
+                "entry 2 supersedes entry 1, which carries the same date, 2026-10-26".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_same_day_rule_is_a_warning() {
+        assert_eq!(
+            Rule::EntrySupersedesSameDay.severity(),
+            crate::lint::rule::Severity::Warning
+        );
+    }
+
+    #[test]
+    fn the_same_day_warning_falls_on_the_artefact_holding_the_mark() {
+        let found = same_day(
+            Some(&[RECORDED]),
+            &[
+                "1. **Use TOML (2026-10-26).** One. **Superseded by:** 2.\n",
+                "2. **Use JSON (2026-10-26).** Two. **Supersedes:** 1.\n",
+            ],
+            MARKS,
+        );
+        let paths: Vec<&str> = found.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["notes/1.md"]);
+    }
+
+    #[test]
+    fn an_added_entry_superseding_one_of_another_date_does_not_warn() {
+        let after = superseded_by("**Use JSON (2026-10-27).**");
+        assert!(same_day(Some(&[RECORDED]), &[&after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn an_undated_side_does_not_warn() {
+        let after = superseded_by("**Use JSON.**");
+        assert!(same_day(Some(&[RECORDED]), &[&after], MARKS).is_empty());
+        let before = "1. **Use TOML.** One.\n";
+        let after = "1. **Use TOML.** One. **Superseded by:** 2.\n\
+                     2. **Use JSON (2026-10-26).** Two. **Supersedes:** 1.\n";
+        assert!(same_day(Some(&[before]), &[after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn a_mark_added_to_a_recorded_entry_does_not_warn() {
+        let before = "1. **Use TOML (2026-10-26).** One.\n2. **Use JSON (2026-10-26).** Two.\n";
+        let after = superseded_by("**Use JSON (2026-10-26).**");
+        assert!(same_day(Some(&[before]), &[&after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn a_commit_with_no_head_does_not_warn() {
+        let after = superseded_by("**Use JSON (2026-10-26).**");
+        assert!(same_day(None, &[&after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn the_snapshot_rules_lint_all_runs_do_not_warn_of_a_same_day_entry() {
+        let after = superseded_by("**Use JSON (2026-10-26).**");
+        assert!(
+            rules::check(&logs(&[&after]), MARKS)
+                .iter()
+                .all(|finding| finding.rule != Rule::EntrySupersedesSameDay)
+        );
+    }
+
+    #[test]
+    fn without_the_proposal_a_same_day_entry_does_not_warn() {
+        let after = superseded_by("**Use JSON (2026-10-26).**");
+        assert!(same_day(Some(&[RECORDED]), &[&after], &[]).is_empty());
+    }
+
+    #[test]
+    fn an_added_entry_whose_title_nests_a_bold_run_does_not_warn() {
+        let after = superseded_by("**Use **only** JSON (2026-10-26).**");
+        assert!(same_day(Some(&[RECORDED]), &[&after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn an_added_entry_whose_title_wraps_across_lines_warns() {
+        let after = superseded_by("**Use JSON, one file\n   per kind (2026-10-26).**");
+        assert_eq!(same_day(Some(&[RECORDED]), &[&after], MARKS).len(), 1);
+    }
+
+    #[test]
+    fn a_supersedes_mark_naming_no_entry_does_not_warn() {
+        let after = "1. **Use TOML (2026-10-26).** One.\n\
+                     2. **Use JSON (2026-10-26).** Two. **Supersedes:** 9.\n";
+        assert!(same_day(Some(&[RECORDED]), &[after], MARKS).is_empty());
     }
 }
