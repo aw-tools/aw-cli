@@ -12,7 +12,7 @@ mod frontmatter;
 mod layout;
 mod model;
 mod placement;
-mod proposal;
+pub mod proposal;
 mod registry;
 mod rule;
 mod rules;
