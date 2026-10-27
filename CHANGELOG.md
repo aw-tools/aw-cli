@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-27
+
 ### Added
 
 - `aw doctor` and `aw status` warn when `.claude/settings.json` leaves Claude
