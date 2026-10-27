@@ -12,6 +12,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Code's agent memory on (#71)
 - `aw lint` applies the supersession-marks proposal when `workspace.toml` lists
   it in `proposals`, and refuses an unknown name (#72)
+- `aw lint` warns when a commit adds an entry superseding one with the same
+  date, under the supersession-marks proposal (#74)
 
 ## [0.5.0] - 2026-10-08
 
