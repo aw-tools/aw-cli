@@ -16,7 +16,9 @@
   "excludes": [
     "**/target",
     "**/tmp",
-    "**/LICENCE-*"
+    "**/LICENCE-*",
+    "tests/suite/rev*/*/**",
+    "tests/suite/proposals/*/*/**"
   ],
   "plugins": [
     "https://plugins.dprint.dev/json-0.22.0.wasm",

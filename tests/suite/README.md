@@ -5,3 +5,7 @@ against. Taken from `suite/` in
 [agentic-workspace](https://github.com/aw-tools/agentic-workspace) at commit
 `0e331428f03dcad480386336c31eb05c331ead81`, under the suite's MIT or Apache-2.0
 licence. Change a fixture there first, then copy it here again.
+
+`proposals/supersession-marks/` is taken from
+`suite/proposals/supersession-marks/` in the same repository at commit
+`b095bc08039c8ff1a13466ecf9fcaf514372427b`.
