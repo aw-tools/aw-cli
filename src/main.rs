@@ -116,9 +116,9 @@ enum Verb {
         path: PathBuf,
     },
     /// Check the workspace's artefacts against the contract revision
-    /// `workspace.toml` declares: the staged tree and what it changes from
-    /// `HEAD`, or with `--all` the working tree. Exits 1 on any failure, 2 when
-    /// the check cannot run.
+    /// `workspace.toml` declares, with any proposals it opts into: the staged
+    /// tree and what it changes from `HEAD`, or with `--all` the working tree.
+    /// Exits 1 on any failure, 2 when the check cannot run.
     Lint {
         /// Check every tracked artefact as it stands in the working tree.
         #[arg(long)]

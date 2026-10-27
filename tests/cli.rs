@@ -772,6 +772,63 @@ fn lint_all_refuses_a_workspace_declaring_no_revision() {
 }
 
 #[test]
+fn lint_refuses_an_unknown_proposal_in_every_mode() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\nproposals = [\"no-such\"]\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    for flags in [&[][..], &["--all"], &["--remits"]] {
+        aw().arg("lint")
+            .arg(root.path())
+            .args(flags)
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("`no-such` in `proposals`"));
+    }
+}
+
+#[test]
+fn lint_refuses_proposals_that_are_not_a_list_of_names() {
+    for value in ["\"supersession-marks\"", "[1]"] {
+        let root = lint_fixture(
+            &format!("\n[template]\ncontract = 1\nproposals = {value}\n"),
+            "---\nkind: doctrine\nstatus: live\n---\n",
+        );
+        for flags in [&[][..], &["--all"], &["--remits"]] {
+            aw().arg("lint")
+                .arg(root.path())
+                .args(flags)
+                .assert()
+                .code(2)
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains(format!("`proposals = {value}`")));
+        }
+    }
+}
+
+#[test]
+fn lint_with_no_proposals_reports_as_without_the_key() {
+    let note = "---\nkind: doctrine\nstatus: live\nclass: standing\n---\n";
+    let output = |template: &str| {
+        let root = lint_fixture(template, note);
+        [&[][..], &["--all"], &["--remits"]].map(|flags| {
+            let output = aw()
+                .arg("lint")
+                .arg(root.path())
+                .args(flags)
+                .output()
+                .expect("run aw");
+            (output.status.code(), output.stdout, output.stderr)
+        })
+    };
+    assert_eq!(
+        output("\n[template]\ncontract = 1\nproposals = []\n"),
+        output("\n[template]\ncontract = 1\n")
+    );
+}
+
+#[test]
 fn lint_refuses_a_manifest_that_does_not_parse() {
     let root = lint_fixture("\n[template\n", "---\nkind: doctrine\nstatus: live\n---\n");
     for args in [&["lint"][..], &["lint", "--all"]] {

@@ -635,7 +635,7 @@ class = \"ephemeral\"
     }
 
     fn staged_findings(root: &Path) -> Vec<(String, Rule)> {
-        super::super::commit::check(&read_staged(root).unwrap())
+        super::super::commit::check(&read_staged(root).unwrap(), &[])
             .into_iter()
             .map(|finding| (finding.path, finding.rule))
             .collect()

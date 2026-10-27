@@ -10,6 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `aw doctor` and `aw status` warn when `.claude/settings.json` leaves Claude
   Code's agent memory on (#71)
+- `aw lint` applies the supersession-marks proposal when `workspace.toml` lists
+  it in `proposals`, and refuses an unknown name (#72)
 
 ## [0.5.0] - 2026-10-08
 

@@ -1,0 +1,3 @@
+clause = "3.6"
+outcome = "fail"
+artefacts = ["VERDICTS.md"]

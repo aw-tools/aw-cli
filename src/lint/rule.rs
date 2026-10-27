@@ -2,6 +2,9 @@
 //! contract clauses it enforces. A rule citing no clause is outside the
 //! contract.
 
+#[cfg(test)]
+use super::proposal::Proposal;
+
 /// Whether a finding blocks: a failure does, a warning is printed and the run
 /// still passes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +76,8 @@ rules! {
     CompactedEmpty => ("compacted-empty", Failure, Contract),
     UnitUndeclared => ("unit-undeclared", Failure, Contract),
     OpenInClosedUnit => ("open-in-closed-unit", Failure, Contract),
+    EntryMarkUnmatched => ("entry-mark-unmatched", Failure, Contract),
+    EntrySupersedesLater => ("entry-supersedes-later", Failure, Contract),
     // The contract on a commit, in the order `commit.rs` checks them.
     StatusSkipped => ("status-skipped", Failure, Contract),
     StatusBackwards => ("status-backwards", Failure, Contract),
@@ -136,6 +141,8 @@ impl Rule {
             Rule::UnitUndeclared => &["4.2.1"],
             Rule::OpenInClosedUnit => &["4.2.3"],
             Rule::CompactedEmpty => &["4.2.4"],
+            Rule::EntryMarkUnmatched => &["3.8"],
+            Rule::EntrySupersedesLater => &["3.9"],
             Rule::StatusSkipped | Rule::StatusBackwards => &["3.3"],
             Rule::BindingRewritten => &["3.6"],
             Rule::ResidueMissing => &["4.1.2"],
@@ -173,6 +180,18 @@ impl Rule {
             | Rule::ItemEngagement
             | Rule::ItemsOverCap
             | Rule::EngagementUnlisted => &[],
+        }
+    }
+
+    /// The proposal whose clauses the rule enforces, which runs it only for a
+    /// workspace opted into it and keeps its fixtures in its own directory.
+    #[cfg(test)]
+    pub fn proposal(self) -> Option<Proposal> {
+        match self {
+            Rule::EntryMarkUnmatched | Rule::EntrySupersedesLater => {
+                Some(Proposal::SupersessionMarks)
+            }
+            _ => None,
         }
     }
 }

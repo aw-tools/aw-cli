@@ -6,8 +6,13 @@
 //! fixture whose clause concerns commits holds its trees under `steps/01` and
 //! `steps/02`; the runner commits the first, stages the second and runs staged
 //! mode. The copy under `tests/suite/` names the commit it was taken from.
+//!
+//! A proposal's fixtures sit under `tests/suite/proposals/<name>/` and run
+//! over revision 1's, a fixture of the same name taking the place of
+//! revision 1's, with the workspace opted into the proposal.
 
 use super::model::{Change, Head, Model, Unit};
+use super::proposal::Proposal;
 use super::registry::RegistryFile;
 use super::rule::Rule;
 use super::tree::{self, Tree};
@@ -186,38 +191,47 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// The verdict `aw lint` reaches on a fixture: the refusal, or the findings.
-fn verdict(fixture: &Fixture) -> Result<Vec<rules::Finding>, Refusal> {
+/// The verdict `aw lint` reaches on a fixture under `proposals`: the
+/// refusal, or the findings.
+fn verdict(fixture: &Fixture, proposals: &[Proposal]) -> Result<Vec<rules::Finding>, Refusal> {
     if let Some(revision) = &fixture.file.revision {
         super::recognise(revision)?;
     }
-    Ok(commit::check(&fixture.change))
+    Ok(commit::check(&fixture.change, proposals))
 }
 
 fn suite() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/suite/rev1")
 }
 
-#[test]
-fn every_fixture_reaches_its_verdict() {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(suite())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    dirs.sort();
-    assert_eq!(dirs.len(), 52, "revision 1 holds 52 fixtures");
-    assert_eq!(
-        dirs.iter().filter(|dir| dir.join("steps").exists()).count(),
-        20,
-        "20 of them hold commits"
-    );
+fn proposal_suite(proposal: Proposal) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/suite/proposals")
+        .join(proposal.name())
+}
 
+/// The fixture directories under `dir`, by name.
+fn fixtures(dir: &Path) -> BTreeMap<String, PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                path,
+            )
+        })
+        .collect()
+}
+
+/// Each fixture of `dirs` that `aw lint` under `proposals` does not reach
+/// the verdict of, with the verdict it reaches.
+fn wrong_verdicts(dirs: &BTreeMap<String, PathBuf>, proposals: &[Proposal]) -> Vec<String> {
     let mut wrong = Vec::new();
-    for dir in &dirs {
-        let name = dir.file_name().unwrap().to_string_lossy();
+    for (name, dir) in dirs {
         let fixture = read(dir);
         let clause = fixture.file.clause.as_str();
-        let verdict = verdict(&fixture);
+        let verdict = verdict(&fixture, proposals);
         let correct = match (fixture.file.outcome.as_str(), &verdict) {
             ("pass", Ok(findings)) => findings.is_empty(),
             ("fail", Err(_)) => clause == "1.1.1",
@@ -245,24 +259,90 @@ fn every_fixture_reaches_its_verdict() {
             ));
         }
     }
+    wrong
+}
+
+fn with_steps(dirs: &BTreeMap<String, PathBuf>) -> usize {
+    dirs.values()
+        .filter(|dir| dir.join("steps").exists())
+        .count()
+}
+
+#[test]
+fn every_fixture_reaches_its_verdict() {
+    let dirs = fixtures(&suite());
+    assert_eq!(dirs.len(), 52, "revision 1 holds 52 fixtures");
+    assert_eq!(with_steps(&dirs), 20, "20 of them hold commits");
+    let wrong = wrong_verdicts(&dirs, &[]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]
-fn every_cited_clause_has_a_failing_fixture() {
-    let failing: Vec<String> = std::fs::read_dir(suite())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|dir| {
-            let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
-            file.outcome == "fail"
+fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
+    let mut dirs = fixtures(&suite());
+    dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
+    assert_eq!(dirs.len(), 68, "the overlay holds 68 fixtures");
+    assert_eq!(with_steps(&dirs), 28, "28 of them hold commits");
+    let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The rules `aw lint` without the opt-in finds in each of the
+/// supersession-marks fixtures `chosen` picks, by fixture name.
+fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(String, Vec<Rule>)> {
+    fixtures(&proposal_suite(Proposal::SupersessionMarks))
+        .into_iter()
+        .map(|(name, dir)| (name, read(&dir)))
+        .filter(|(_, fixture)| chosen(&fixture.file))
+        .map(|(name, fixture)| {
+            let rules = verdict(&fixture, &[])
+                .unwrap()
+                .into_iter()
+                .map(|finding| finding.rule)
+                .collect();
+            (name, rules)
         })
-        .map(|dir| dir.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
+        .collect()
+}
+
+#[test]
+fn the_proposals_passing_3_6_fixtures_fail_revision_1s_3_6() {
+    let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
+    assert_eq!(reached.len(), 4, "{reached:?}");
+    for (name, rules) in reached {
+        assert_eq!(rules, [Rule::BindingRewritten], "{name}");
+    }
+}
+
+#[test]
+fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
+    let reached = rules_without_the_opt_in(|file| file.clause == "3.8" || file.clause == "3.9");
+    assert_eq!(reached.len(), 8, "{reached:?}");
+    for (name, rules) in reached {
+        assert!(rules.is_empty(), "{name}: {rules:?}");
+    }
+}
+
+#[test]
+fn every_cited_clause_has_a_failing_fixture() {
+    let failing = |dir: PathBuf| -> Vec<String> {
+        fixtures(&dir)
+            .into_iter()
+            .filter(|(_, dir)| {
+                let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
+                file.outcome == "fail"
+            })
+            .map(|(name, _)| name)
+            .collect()
+    };
     for &rule in Rule::ALL {
+        let mut names = failing(suite());
+        if let Some(proposal) = rule.proposal() {
+            names.extend(failing(proposal_suite(proposal)));
+        }
         for clause in rule.clauses() {
             assert!(
-                failing
+                names
                     .iter()
                     .any(|name| name.starts_with(&format!("{clause}-"))),
                 "{} cites {clause}, which has no failing fixture",
