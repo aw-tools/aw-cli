@@ -12,6 +12,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Code's agent memory on (#71)
 - `aw lint` applies the supersession-marks proposal when `workspace.toml` lists
   it in `proposals`, and refuses an unknown name (#72)
+- `aw init` records the template's `proposals` in the `[template]` block it
+  writes, and refuses a proposal name it does not know (#73)
 
 ## [0.5.0] - 2026-10-08
 
