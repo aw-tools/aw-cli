@@ -112,7 +112,7 @@ fn check_transitions(
 /// Clause 3.6 as the `supersession-marks` proposal words it, marks and layout
 /// aside: how a binding artefact's body changes what `before` recorded, if it
 /// does. The recorded entries must open the body, each keeping its number and
-/// words, new entries must be numbered above the last of them, and the words
+/// words, new entries must be numbered above the highest of them, and the words
 /// outside entries must begin with the recorded ones.
 fn rewritten(before: &str, after: &str) -> Option<String> {
     let (was, now) = (entries::parse(before), entries::parse(after));
@@ -129,16 +129,17 @@ fn rewritten(before: &str, after: &str) -> Option<String> {
             ));
         }
     }
-    let misplaced = was.entries.last().and_then(|last| {
+    let highest = was.entries.iter().map(|entry| entry.number).max();
+    let misplaced = highest.and_then(|highest| {
         now.entries[was.entries.len()..]
             .iter()
-            .find(|entry| entry.number <= last.number)
-            .map(|entry| (entry.number, last.number))
+            .find(|entry| entry.number <= highest)
+            .map(|entry| (entry.number, highest))
     });
-    if let Some((number, last)) = misplaced {
+    if let Some((number, highest)) = misplaced {
         return Some(format!(
-            "binding artefact adds entry {number} after entry {last}; new entries must follow \
-             the recorded ones"
+            "binding artefact adds entry {number}, not numbered above recorded entry {highest}; \
+             new entries must follow the recorded ones"
         ));
     }
     (!now.outside.starts_with(&was.outside)).then(|| {
@@ -393,9 +394,60 @@ class = \"binding\"
         assert_eq!(
             rewritten("1. One.\n2. Two.\n", "1. One.\n2. Two.\n0. Zero.\n").as_deref(),
             Some(
-                "binding artefact adds entry 0 after entry 2; new entries must follow the \
-                 recorded ones"
+                "binding artefact adds entry 0, not numbered above recorded entry 2; new entries \
+                 must follow the recorded ones"
             )
+        );
+    }
+
+    #[test]
+    fn under_the_proposal_a_new_entry_numbered_below_the_highest_recorded_fails() {
+        assert_eq!(
+            rewritten("1. A.\n5. E.\n2. B.\n", "1. A.\n5. E.\n2. B.\n3. C.\n").as_deref(),
+            Some(
+                "binding artefact adds entry 3, not numbered above recorded entry 5; new entries \
+                 must follow the recorded ones"
+            )
+        );
+    }
+
+    #[test]
+    fn under_the_proposal_a_block_under_an_entry_line_keeps_its_words_outside_it() {
+        assert_eq!(
+            rewritten(
+                "1. Use TOML for the registry:\n- one file per kind\n",
+                "1. Use TOML for the registry:\n\n- one file per kind\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn under_the_proposal_marks_may_join_entries_indented_up_to_three_spaces() {
+        for indent in ["", " "] {
+            let before = format!("{indent}1. Use TOML.\n 2. Use JSON.\n");
+            let after = format!(
+                "{indent}1. Use TOML. **Superseded by:** 2.\n 2. Use JSON. **Supersedes:** 1.\n"
+            );
+            assert_eq!(rewritten(&before, &after), None, "{indent:?}");
+        }
+    }
+
+    #[test]
+    fn under_the_proposal_a_mark_with_an_unspaced_list_may_join_a_recorded_entry() {
+        assert_eq!(
+            rewritten(
+                "1. Use TOML.\n2. Keep one file.\n",
+                "1. Use TOML.\n2. Keep one file.\n3. Use JSON. **Supersedes:** 1,2.\n"
+            ),
+            None
+        );
+        assert_eq!(
+            rewritten(
+                "1. Use TOML.\n2. Keep one file.\n3. Use JSON.\n",
+                "1. Use TOML.\n2. Keep one file.\n3. Use JSON. **Supersedes:** 1,2.\n"
+            ),
+            None
         );
     }
 
