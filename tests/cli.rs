@@ -139,6 +139,158 @@ fn init_trusts_a_non_default_template_with_the_flag() {
     assert!(manifest.contains("\ncontract = 1\n"), "{manifest}");
 }
 
+// --- init: the template's proposals -----------------------------------------
+
+/// A local template whose `workspace.toml` starts with `prelude`, committed.
+fn template_with_prelude(root: &Path, prelude: &str) -> std::path::PathBuf {
+    template_with_manifest(
+        root,
+        &format!("{prelude}[workspace]\nname = \"CHANGEME\"\n"),
+    )
+}
+
+/// A local template whose `workspace.toml` is `manifest`, committed.
+fn template_with_manifest(root: &Path, manifest: &str) -> std::path::PathBuf {
+    let seed = local_template(root);
+    std::fs::write(seed.join("workspace.toml"), manifest).expect("write manifest");
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&seed)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-qam",
+            "prelude",
+        ])
+        .status()
+        .expect("run git")
+        .success();
+    assert!(ok, "git commit succeeds");
+    seed
+}
+
+fn init_from(template: &Path, target: &Path) -> assert_cmd::assert::Assert {
+    aw().args(["init", "--trust-template", "--name", "demo", "--template"])
+        .arg(template)
+        .arg(target)
+        .assert()
+}
+
+/// What `aw init` writes after the `contract` line of its `[template]` block.
+fn after_contract(target: &Path) -> String {
+    let manifest = std::fs::read_to_string(target.join("workspace.toml")).expect("manifest");
+    let (_, after) = manifest
+        .split_once("\ncontract = 1\n")
+        .unwrap_or_else(|| panic!("no contract line in {manifest}"));
+    after.to_owned()
+}
+
+#[test]
+fn init_moves_the_templates_proposals_verbatim_after_contract() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = template_with_prelude(
+        temp.path(),
+        "# Opt into the draft.\nproposals = [\n  \"supersession-marks\", # the draft\n]\n\n",
+    );
+    let target = temp.path().join("demo.workspace");
+    init_from(&template, &target).success();
+    assert_eq!(
+        after_contract(&target),
+        "proposals = [\n  \"supersession-marks\", # the draft\n]\n\n\
+         # Opt into the draft.\n\n[workspace]\nname = \"demo\"\n"
+    );
+}
+
+#[test]
+fn init_from_a_template_without_proposals_writes_none() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = template_with_prelude(temp.path(), "");
+    let target = temp.path().join("demo.workspace");
+    init_from(&template, &target).success();
+    assert_eq!(after_contract(&target), "\n[workspace]\nname = \"demo\"\n");
+}
+
+#[test]
+fn init_refuses_template_proposals_lint_refuses_and_writes_nothing() {
+    for (value, message) in [
+        (
+            "[\"no-such\"]",
+            "`no-such` in `proposals`, a proposal this aw does not know",
+        ),
+        (
+            "\"supersession-marks\"",
+            "`proposals = \"supersession-marks\"`; `proposals` takes a list",
+        ),
+        ("[1]", "`proposals = [1]`; `proposals` takes a list"),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let template = template_with_prelude(temp.path(), &format!("proposals = {value}\n\n"));
+        let target = temp.path().join("demo.workspace");
+        init_from(&template, &target)
+            .code(1)
+            .stdout("")
+            .stderr(predicate::str::starts_with(
+                "aw: template contract violation: workspace.toml ",
+            ))
+            .stderr(predicate::str::contains(message));
+        assert!(!target.exists(), "a refused {value} leaves no directory");
+    }
+}
+
+#[test]
+fn init_refuses_a_dotted_proposals_key_above_the_first_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = template_with_prelude(temp.path(), "proposals.x = 1\n\n");
+    let target = temp.path().join("demo.workspace");
+    init_from(&template, &target)
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::starts_with(
+            "aw: template contract violation: workspace.toml ",
+        ))
+        .stderr(predicate::str::contains("`proposals` takes a list"));
+    assert!(!target.exists(), "a refused dotted key leaves no directory");
+}
+
+#[test]
+fn init_writes_a_proposals_table_header_where_the_template_put_it() {
+    for header in ["[proposals]", "[[proposals]]", "[proposals.sub]"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let body = format!("\n{header}\nnote = \"drafts under watch\"\n");
+        let template = template_with_manifest(
+            temp.path(),
+            &format!("[workspace]\nname = \"CHANGEME\"\n{body}"),
+        );
+        let target = temp.path().join("demo.workspace");
+        init_from(&template, &target).success();
+        assert_eq!(
+            after_contract(&target),
+            format!("\n[workspace]\nname = \"demo\"\n{body}"),
+            "{header}"
+        );
+    }
+}
+
+#[test]
+fn init_again_over_recorded_provenance_leaves_the_manifest_unchanged() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = template_with_prelude(
+        temp.path(),
+        "# Opt into the draft.\nproposals = [\"supersession-marks\"]\n\n",
+    );
+    let target = temp.path().join("demo.workspace");
+    init_from(&template, &target).success();
+    let first = std::fs::read_to_string(target.join("workspace.toml")).expect("manifest");
+    init_from(&template, &target).success();
+    let second = std::fs::read_to_string(target.join("workspace.toml")).expect("manifest");
+    assert_eq!(second, first);
+    assert_eq!(second.matches("proposals").count(), 1, "{second}");
+}
+
 // --- adopt: rejection paths -------------------------------------------------
 
 #[test]

@@ -300,6 +300,10 @@ fn validate_contract(root: &Path) -> Result<()> {
     let text = std::fs::read_to_string(root.join(crate::manifest::FILENAME))
         .context("reading template manifest")?;
     crate::manifest::replace_workspace_name(&text, crate::manifest::WORKSPACE_NAME_PLACEHOLDER)?;
+    if let Some(proposals) = crate::manifest::top_level_proposals(&text)? {
+        crate::lint::proposal::recognise(proposals.get_ref())
+            .map_err(|refusal| anyhow::anyhow!("template contract violation: {refusal}"))?;
+    }
     Ok(())
 }
 
