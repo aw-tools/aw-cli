@@ -503,24 +503,55 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
         return Ok(parsed);
     }
 
+    // Only a value `aw lint` honours moves. A manifest the target already held
+    // may carry a `[proposals]` table or `[[proposals]]` array, whose span is
+    // its header alone: moving those lines would strand its keys.
+    let proposals = top_level_proposals(&text)?
+        .filter(|value| crate::lint::proposal::recognise(value.get_ref()).is_ok());
+    let (moved, rest) = match &proposals {
+        Some(value) => {
+            let span = value.span();
+            let start = text[..span.start].rfind('\n').map_or(0, |at| at + 1);
+            let end = text[span.end..]
+                .find('\n')
+                .map_or(text.len(), |at| span.end + at + 1);
+            (
+                &text[start..end],
+                format!("{}{}", &text[..start], &text[end..]),
+            )
+        }
+        None => ("", text.clone()),
+    };
+
     let quote = |value: &str| toml::Value::String(value.to_owned()).to_string();
     let revision = crate::lint::REVISION;
     let provenance = format!(
-        "[template]\nurl = {}\nref = {}\nsha = {}\ncontract = {revision}\n\n",
+        "[template]\nurl = {}\nref = {}\nsha = {}\ncontract = {revision}\n{moved}\n",
         quote(url),
         quote(reference),
         quote(sha)
     );
-    std::fs::write(&path, format!("{provenance}{text}"))
+    std::fs::write(&path, format!("{provenance}{rest}"))
         .with_context(|| format!("writing {}", path.display()))?;
     parsed.template = Some(TemplateBlock {
         url: Some(url.to_owned()),
         reference: Some(reference.to_owned()),
         sha: Some(sha.to_owned()),
         contract: Some(toml::Value::Integer(revision)),
-        proposals: None,
+        proposals: proposals.map(toml::Spanned::into_inner),
     });
     Ok(parsed)
+}
+
+/// The `proposals` a manifest's text declares at its top level, above its
+/// first table, where a template declares them.
+pub fn top_level_proposals(text: &str) -> Result<Option<toml::Spanned<toml::Value>>> {
+    #[derive(Deserialize)]
+    struct TopLevel {
+        proposals: Option<toml::Spanned<toml::Value>>,
+    }
+    let top: TopLevel = toml::from_str(text).context("parsing the manifest's top level")?;
+    Ok(top.proposals)
 }
 
 /// The provenance a `[template]` block records. A block without one belongs to
