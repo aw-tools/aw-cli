@@ -7,6 +7,7 @@
 use crate::garden;
 use crate::git;
 use crate::manifest::Manifest;
+use crate::memory;
 use crate::skills;
 use anyhow::{Context, Result};
 use serde::ser::SerializeStruct;
@@ -540,6 +541,59 @@ impl ReportSection for HookHealthSection {
     }
 }
 
+struct AgentMemorySection {
+    finding: Option<memory::Finding>,
+}
+
+impl ReportSection for AgentMemorySection {
+    fn name(&self) -> &'static str {
+        "agent_memory"
+    }
+
+    fn has_finding(&self) -> bool {
+        self.finding.is_some()
+    }
+
+    fn render_human(&self, output: &mut String) {
+        output.push_str("agent memory\n");
+        let problem = match &self.finding {
+            None => return,
+            Some(memory::Finding::Enabled) => "does not set autoMemoryEnabled to false".to_owned(),
+            Some(memory::Finding::InvalidJson { error }) => format!("is not valid JSON: {error}"),
+            Some(memory::Finding::Unreadable { error }) => format!("could not be read: {error}"),
+        };
+        writeln!(
+            output,
+            "{:<24} {} {problem}",
+            "workspace",
+            memory::SETTINGS_FILE
+        )
+        .expect("writing to a string cannot fail");
+    }
+
+    fn json(&self) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            repository: &'a str,
+            file: &'a str,
+            #[serde(flatten)]
+            finding: &'a memory::Finding,
+        }
+
+        serde_json::to_value(
+            self.finding
+                .iter()
+                .map(|finding| Entry {
+                    repository: "workspace",
+                    file: memory::SETTINGS_FILE,
+                    finding,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("agent-memory entries always serialise")
+    }
+}
+
 struct UnlistedCheckoutsSection {
     paths: Vec<String>,
 }
@@ -860,6 +914,9 @@ pub fn build(root: &Path) -> Result<StatusReport> {
     report.add_section(ahead_behind);
     report.add_section(configuration_drift);
     report.add_section(hook_health);
+    report.add_section(AgentMemorySection {
+        finding: memory::check(root),
+    });
     report.add_section(unlisted_checkouts);
     report.add_section(skill_links);
     Ok(report)

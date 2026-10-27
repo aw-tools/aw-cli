@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `aw doctor` and `aw status` warn when `.claude/settings.json` leaves Claude
+  Code's agent memory on (#71)
+
 ## [0.5.0] - 2026-10-08
 
 ### Added

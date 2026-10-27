@@ -14,6 +14,7 @@ mod garden;
 mod git;
 mod lint;
 mod manifest;
+mod memory;
 mod reporting;
 mod skills;
 mod status;
@@ -62,12 +63,12 @@ enum Verb {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
-    /// Check the environment, remotes, and link health.
+    /// Check the environment, remotes, link health, and agent memory.
     Doctor {
         /// Workspace root. Defaults to the nearest ancestor with a manifest.
         dir: Option<PathBuf>,
     },
-    /// Report repository presence and working-tree state.
+    /// Report repository presence, working-tree state, and agent memory.
     Status {
         /// Emit JSON (unstable during incubation).
         #[arg(long)]
@@ -582,35 +583,10 @@ fn doctor(root: &Path) -> Result<bool> {
         }
     }
 
+    doctor_agent_memory(root);
+
     let manifest = Manifest::load(root)?;
-    for repo in &manifest.repos {
-        match git::probe_remote(&repo.url, repo.branch.as_deref()) {
-            git::RemoteProbe::Reachable => {
-                check(true, reporting::doctor_remote_reachable(&repo.path));
-            }
-            git::RemoteProbe::Denied(why) => {
-                check(false, reporting::doctor_remote_denied(&repo.path, &why));
-            }
-            git::RemoteProbe::Unreachable(why) => {
-                check(
-                    false,
-                    reporting::doctor_remote_unreachable(&repo.path, &why),
-                );
-            }
-            git::RemoteProbe::MissingBranch(branch) => {
-                check(
-                    false,
-                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
-                );
-            }
-        }
-        // A member's delivery model is authoritative in its own instruction
-        // files, read live (decision 45). Surface whether one is declared as a
-        // plain informational line, outside the `check` closure: an absent model
-        // is the conservative default, never a fault, so it must not touch `ok`.
-        let declared = delivery::declared_in(&root.join(&repo.path));
-        println!("{}", reporting::doctor_delivery_model(&repo.path, declared));
-    }
+    doctor_remotes(root, &manifest, &mut check);
 
     for harness in skills::HARNESSES {
         let dir = root.join(harness.dir);
@@ -644,6 +620,60 @@ fn doctor(root: &Path) -> Result<bool> {
     }
 
     Ok(ok)
+}
+
+fn doctor_remotes(
+    root: &Path,
+    manifest: &Manifest,
+    check: &mut impl FnMut(bool, reporting::DoctorCheck),
+) {
+    for repo in &manifest.repos {
+        match git::probe_remote(&repo.url, repo.branch.as_deref()) {
+            git::RemoteProbe::Reachable => {
+                check(true, reporting::doctor_remote_reachable(&repo.path));
+            }
+            git::RemoteProbe::Denied(why) => {
+                check(false, reporting::doctor_remote_denied(&repo.path, &why));
+            }
+            git::RemoteProbe::Unreachable(why) => {
+                check(
+                    false,
+                    reporting::doctor_remote_unreachable(&repo.path, &why),
+                );
+            }
+            git::RemoteProbe::MissingBranch(branch) => {
+                check(
+                    false,
+                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
+                );
+            }
+        }
+        // A member's delivery model is authoritative in its own instruction
+        // files, read live (decision 45). Surface whether one is declared as a
+        // plain informational line, outside the `check` closure: an absent model
+        // is the conservative default, never a fault, so it must not touch `ok`.
+        let declared = delivery::declared_in(&root.join(&repo.path));
+        println!("{}", reporting::doctor_delivery_model(&repo.path, declared));
+    }
+}
+
+/// A warning only: it prints and never fails `doctor`.
+fn doctor_agent_memory(root: &Path) {
+    let Some(finding) = memory::check(root) else {
+        return;
+    };
+    let settings = root.join(memory::SETTINGS_FILE);
+    let report = match finding {
+        memory::Finding::Enabled => reporting::doctor_agent_memory_enabled(&settings),
+        memory::Finding::InvalidJson { error } => {
+            reporting::doctor_agent_memory_invalid_json(&settings, &error)
+        }
+        memory::Finding::Unreadable { error } => {
+            reporting::doctor_agent_memory_unreadable(&settings, &error)
+        }
+    };
+    println!("{}", reporting::doctor_warn(&report));
+    println!("{}", reporting::doctor_remedy(&report));
 }
 
 #[cfg(test)]

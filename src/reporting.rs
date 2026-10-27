@@ -364,6 +364,10 @@ pub fn doctor_check(pass: bool, check: &DoctorCheck) -> String {
     format!("{status}  {:<22} {}", check.label, check.detail)
 }
 
+pub fn doctor_warn(check: &DoctorCheck) -> String {
+    format!("WARN  {:<22} {}", check.label, check.detail)
+}
+
 pub fn doctor_remedy(check: &DoctorCheck) -> String {
     format!("      {:<22} remedy: {}", "", check.remedy)
 }
@@ -490,6 +494,30 @@ pub fn doctor_skill_links(dangling: usize) -> DoctorCheck {
     )
 }
 
+pub fn doctor_agent_memory_enabled(path: &Path) -> DoctorCheck {
+    DoctorCheck::new(
+        "agent memory",
+        format!("{} does not set autoMemoryEnabled to false", path.display()),
+        "set \"autoMemoryEnabled\": false in that file",
+    )
+}
+
+pub fn doctor_agent_memory_invalid_json(path: &Path, why: &str) -> DoctorCheck {
+    DoctorCheck::new(
+        "agent memory",
+        format!("{} is not valid JSON — {why}", path.display()),
+        "make it valid JSON that sets \"autoMemoryEnabled\": false",
+    )
+}
+
+pub fn doctor_agent_memory_unreadable(path: &Path, why: &str) -> DoctorCheck {
+    DoctorCheck::new(
+        "agent memory",
+        format!("{} could not be read — {why}", path.display()),
+        "make the file readable, then set \"autoMemoryEnabled\": false in it",
+    )
+}
+
 pub fn doctor_dangling_link(path: &Path) -> String {
     format!("      {:<22} {}", "", path.display())
 }
@@ -594,6 +622,45 @@ mod tests {
     fn hook_live_renders_pass_when_live() {
         let check = doctor_hook_live(Path::new("/w/.githooks/pre-commit"), true);
         assert!(doctor_check(true, &check).starts_with("PASS"));
+    }
+
+    #[test]
+    fn agent_memory_renders_warn_with_remedy() {
+        let check = doctor_agent_memory_enabled(Path::new("/w/.claude/settings.json"));
+        assert_eq!(
+            doctor_warn(&check),
+            "WARN  agent memory           /w/.claude/settings.json does not set autoMemoryEnabled to false"
+        );
+        assert!(doctor_remedy(&check).ends_with("set \"autoMemoryEnabled\": false in that file"));
+    }
+
+    #[test]
+    fn agent_memory_invalid_json_renders_warn_naming_the_file() {
+        let check = doctor_agent_memory_invalid_json(
+            Path::new("/w/.claude/settings.json"),
+            "EOF while parsing an object at line 1 column 27",
+        );
+        assert_eq!(
+            doctor_warn(&check),
+            "WARN  agent memory           /w/.claude/settings.json is not valid JSON — EOF while parsing an object at line 1 column 27"
+        );
+        assert!(
+            doctor_remedy(&check)
+                .ends_with("remedy: make it valid JSON that sets \"autoMemoryEnabled\": false")
+        );
+    }
+
+    #[test]
+    fn agent_memory_unreadable_renders_warn_naming_the_file_and_error() {
+        let check = doctor_agent_memory_unreadable(
+            Path::new("/w/.claude/settings.json"),
+            "Permission denied (os error 13)",
+        );
+        assert_eq!(
+            doctor_warn(&check),
+            "WARN  agent memory           /w/.claude/settings.json could not be read — Permission denied (os error 13)"
+        );
+        assert!(!doctor_remedy(&check).contains("JSON"));
     }
 
     #[test]

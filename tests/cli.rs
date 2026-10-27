@@ -374,6 +374,40 @@ fn status_reports_a_dead_workspace_hook_without_double_counting() {
         .code(1);
 }
 
+// --- status: agent memory ---------------------------------------------------
+
+#[test]
+fn status_json_reports_agent_memory_left_on() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let hooks_dir = hook_fixture(root.path());
+    write_executable_hook(&hooks_dir);
+    set_hooks_path(root.path(), ".githooks");
+    std::fs::create_dir(root.path().join(".claude")).expect(".claude dir");
+    std::fs::write(root.path().join(".claude/settings.json"), "{}").expect("write settings");
+
+    aw().args(["status", "--json"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"name\": \"agent_memory\",
+      \"finding\": true,
+      \"data\": [
+        {
+          \"file\": \".claude/settings.json\",
+          \"repository\": \"workspace\",
+          \"state\": \"enabled\"
+        }
+      ]",
+        ));
+
+    aw().args(["status", "--exit-code"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .code(1);
+}
+
 // --- lint -------------------------------------------------------------------
 
 const LINT_REGISTRY: &str = "\

@@ -977,6 +977,40 @@ assert "doctor names the missing pinned branch instead of blaming the network" \
 		"$WORK/doctor-missing.log")" 1
 }
 
+# --- agent memory ------------------------------------------------------------
+case_agent_memory() {
+prepare_demo_workspace
+"$AW" bootstrap "$WORK/demo.workspace" >"$WORK/boot.log" 2>&1
+"$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor-no-settings.log" 2>&1
+assert "doctor prints no warning without a settings file" \
+	"$(grep -c '^WARN' "$WORK/doctor-no-settings.log" || true)" 0
+if "$AW" status --exit-code "$WORK/demo.workspace" >/dev/null; then
+	pass "status --exit-code passes without a settings file"
+else
+	fail "status --exit-code passes without a settings file"
+fi
+
+mkdir -p "$WORK/demo.workspace/.claude"
+echo '{"permissions": {"allow": []}}' >"$WORK/demo.workspace/.claude/settings.json"
+if "$AW" doctor "$WORK/demo.workspace" >"$WORK/doctor-memory.log" 2>&1; then
+	pass "doctor exits zero when agent memory is left on"
+else
+	fail "doctor exits zero when agent memory is left on"
+fi
+assert "doctor warns that agent memory is left on" \
+	"$(grep -c '^WARN  agent memory .*settings\.json does not set autoMemoryEnabled to false$' \
+		"$WORK/doctor-memory.log")" 1
+"$AW" status "$WORK/demo.workspace" >"$WORK/status-memory.log"
+assert "status reports agent memory left on" \
+	"$(grep -c '^workspace[[:space:]]*\.claude/settings\.json does not set autoMemoryEnabled to false$' \
+		"$WORK/status-memory.log")" 1
+if "$AW" status --exit-code "$WORK/demo.workspace" >/dev/null; then
+	fail "status --exit-code fails when agent memory is left on"
+else
+	pass "status --exit-code fails when agent memory is left on"
+fi
+}
+
 # --- reusable status fixtures -------------------------------------------------
 case_status_fixtures() {
 setup_status_fixtures
@@ -1910,6 +1944,7 @@ run_case exact-tree case_exact_tree
 run_case adopt case_adopt
 run_case doctor case_doctor
 run_case doctor-pinned-branch case_doctor_pinned_branch
+run_case agent-memory case_agent_memory
 run_case status-fixtures case_status_fixtures
 run_case status case_status
 run_case status-drift case_status_drift
