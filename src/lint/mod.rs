@@ -7,10 +7,12 @@
 //! compare them.
 
 mod commit;
+mod entries;
 mod frontmatter;
 mod layout;
 mod model;
 mod placement;
+mod proposal;
 mod registry;
 mod rule;
 mod rules;
@@ -22,6 +24,7 @@ mod tree;
 use crate::manifest::{Manifest, TemplateBlock};
 use crate::reporting;
 use anyhow::Result;
+use proposal::Proposal;
 use rule::{Severity, Tier};
 use std::path::Path;
 
@@ -62,16 +65,19 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// Refuse a workspace that names no suite revision, or one this `aw` does not
-/// implement.
-pub fn check_revision(template: Option<&TemplateBlock>) -> Result<(), Refusal> {
+/// Refuse a workspace that names no suite revision, one this `aw` does not
+/// implement, or a proposal it does not know; the proposals it opts into.
+pub fn check_declaration(template: Option<&TemplateBlock>) -> Result<Vec<Proposal>, Refusal> {
     let Some(contract) = template.and_then(|block| block.contract.as_ref()) else {
         return Err(Refusal::new(format!(
             "workspace.toml has no `contract` in its [template] block; replaying the \
              template's changelog adds `contract = {REVISION}` together with `.awlintignore`"
         )));
     };
-    recognise(contract)
+    recognise(contract)?;
+    template
+        .and_then(|block| block.proposals.as_ref())
+        .map_or_else(|| Ok(Vec::new()), proposal::recognise)
 }
 
 /// Refuse a declared revision this `aw` does not implement.
@@ -89,9 +95,9 @@ fn recognise(contract: &toml::Value) -> Result<(), Refusal> {
 /// tree. Failures go to stdout, the count to stderr. Returns whether there
 /// were none.
 pub fn run_all(root: &Path) -> Result<bool> {
-    check_revision(Manifest::load(root)?.template.as_ref())?;
+    let proposals = check_declaration(Manifest::load(root)?.template.as_ref())?;
     let model = layout::read_worktree(root)?;
-    let mut findings = rules::check(&model);
+    let mut findings = rules::check(&model, &proposals);
     findings.extend(placement::check(&model));
     findings.extend(style::check(&model, style::today()));
     Ok(report(&gated(findings, &model)))
@@ -100,9 +106,9 @@ pub fn run_all(root: &Path) -> Result<bool> {
 /// `aw lint`: check the staged tree, and what it changes from `HEAD`. A
 /// repository with no `HEAD` gets the snapshot rules alone.
 pub fn run_staged(root: &Path) -> Result<bool> {
-    check_revision(Manifest::load(root)?.template.as_ref())?;
+    let proposals = check_declaration(Manifest::load(root)?.template.as_ref())?;
     let change = layout::read_staged(root)?;
-    let mut findings = commit::check(&change);
+    let mut findings = commit::check(&change, &proposals);
     findings.extend(placement::check(&change.staged));
     findings.extend(style::check(&change.staged, style::today()));
     Ok(report(&gated(findings, &change.staged)))
@@ -111,7 +117,7 @@ pub fn run_staged(root: &Path) -> Result<bool> {
 /// `aw lint --remits`: list the engagements by remit on stdout, from the
 /// registry in the working tree; with `filter`, only that remit.
 pub fn run_remits(root: &Path, filter: Option<&str>) -> Result<bool> {
-    check_revision(Manifest::load(root)?.template.as_ref())?;
+    check_declaration(Manifest::load(root)?.template.as_ref())?;
     let registry = layout::read_registry(root)?;
     for line in style::remits(&registry, |dir| root.join(dir).is_dir(), filter) {
         println!("{line}");
@@ -207,13 +213,34 @@ mod tests {
 
     #[test]
     fn the_implemented_revision_is_accepted() {
-        assert!(check_revision(template("[template]\ncontract = 1").as_ref()).is_ok());
+        assert!(check_declaration(template("[template]\ncontract = 1").as_ref()).is_ok());
+    }
+
+    #[test]
+    fn the_declaration_returns_the_proposals_opted_into() {
+        let declared = |proposals: &str| {
+            check_declaration(template(&format!("[template]\ncontract = 1\n{proposals}")).as_ref())
+                .unwrap()
+        };
+        assert!(declared("").is_empty());
+        assert!(declared("proposals = []").is_empty());
+        assert_eq!(
+            declared("proposals = [\"supersession-marks\"]"),
+            [Proposal::SupersessionMarks]
+        );
+    }
+
+    #[test]
+    fn an_unknown_proposal_is_refused_beside_the_contract() {
+        let block = template("[template]\ncontract = 1\nproposals = [\"no-such\"]");
+        let refusal = check_declaration(block.as_ref()).unwrap_err().to_string();
+        assert!(refusal.contains("`no-such` in `proposals`"), "{refusal}");
     }
 
     #[test]
     fn a_missing_contract_is_refused_naming_the_key() {
         for fragment in ["", "[template]\nurl = \"u\"\nref = \"r\"\nsha = \"s\""] {
-            let refusal = check_revision(template(fragment).as_ref()).unwrap_err();
+            let refusal = check_declaration(template(fragment).as_ref()).unwrap_err();
             assert!(refusal.to_string().contains("no `contract`"), "{refusal}");
             assert!(refusal.to_string().contains(".awlintignore"), "{refusal}");
         }
@@ -223,7 +250,7 @@ mod tests {
     fn an_unknown_contract_is_refused_naming_the_key() {
         for value in ["999", "0", "\"1\"", "1.0"] {
             let block = template(&format!("[template]\ncontract = {value}"));
-            let refusal = check_revision(block.as_ref()).unwrap_err();
+            let refusal = check_declaration(block.as_ref()).unwrap_err();
             assert!(
                 refusal
                     .to_string()

@@ -45,6 +45,9 @@ pub struct TemplateBlock {
     /// The conformance-suite revision the workspace conforms to. Kept as a raw
     /// value so a wrong type is `aw lint`'s refusal, not every verb's.
     pub contract: Option<toml::Value>,
+    /// The contract proposals the workspace opts into. Raw for the same
+    /// reason as `contract`.
+    pub proposals: Option<toml::Value>,
 }
 
 impl TemplateBlock {
@@ -515,6 +518,7 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
         reference: Some(reference.to_owned()),
         sha: Some(sha.to_owned()),
         contract: Some(toml::Value::Integer(revision)),
+        proposals: None,
     });
     Ok(parsed)
 }
@@ -851,6 +855,18 @@ mod tests {
             ),
             ("u", "v1", "s")
         );
+    }
+
+    #[test]
+    fn a_proposals_value_of_any_type_parses() {
+        for value in ["[\"supersession-marks\"]", "5"] {
+            let manifest = manifest_with_template(&format!("contract = 1\nproposals = {value}"));
+            manifest.validate().expect("valid");
+            assert_eq!(
+                manifest.template.expect("block").proposals,
+                Some(toml::from_str::<toml::Table>(&format!("v = {value}")).unwrap()["v"].clone())
+            );
+        }
     }
 
     #[test]

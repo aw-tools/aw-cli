@@ -4,7 +4,9 @@
 //! No rule names a kind; the registry gives each its class (clause 2.5). The
 //! class and state names below are the contract's own, fixed by its section 3.
 
+use super::entries::{self, Entry};
 use super::model::{Artefact, Header, Model, Registry, Unit};
+use super::proposal::Proposal;
 use super::rule::Rule;
 
 pub(super) const BINDING: &str = "binding";
@@ -27,8 +29,9 @@ pub struct Finding {
     pub rule: Rule,
 }
 
-/// Every finding in the model, in artefact order.
-pub fn check(model: &Model) -> Vec<Finding> {
+/// Every finding in the model, in artefact order, then the entries' marks
+/// under the proposals opted into.
+pub fn check(model: &Model, proposals: &[Proposal]) -> Vec<Finding> {
     let mut findings = Vec::new();
     for artefact in &model.artefacts {
         let mut found = |rule: Rule, message: String| {
@@ -39,6 +42,9 @@ pub fn check(model: &Model) -> Vec<Finding> {
             });
         };
         check_artefact(artefact, &model.registry, &model.units, &mut found);
+    }
+    if proposals.contains(&Proposal::SupersessionMarks) {
+        check_marks(model, &mut findings);
     }
     findings
 }
@@ -170,6 +176,78 @@ fn check_episodic(
     }
 }
 
+/// Clauses 3.8 and 3.9 of the `supersession-marks` proposal, over the entries
+/// of every binding artefact: marks agree, each named entry on its own, and a
+/// supersedes mark names only earlier entries. A finding falls on the artefact
+/// holding the mark.
+fn check_marks(model: &Model, findings: &mut Vec<Finding>) {
+    let entries: Vec<(&str, Entry)> = model
+        .artefacts
+        .iter()
+        .filter(|artefact| {
+            declared(artefact, "kind")
+                .and_then(|kind| model.registry.kinds.get(kind))
+                .is_some_and(|class| class == BINDING)
+        })
+        .flat_map(|artefact| {
+            entries::parse(&artefact.body)
+                .entries
+                .into_iter()
+                .map(|entry| (artefact.path.as_str(), entry))
+        })
+        .collect();
+    // A number no binding artefact holds never agrees, and a repeated number
+    // agrees only if every entry carrying it does.
+    let agree = |number: u64, marked: &dyn Fn(&Entry) -> bool| {
+        let mut named = entries
+            .iter()
+            .filter(|(_, entry)| entry.number == number)
+            .peekable();
+        named.peek().is_some() && named.all(|(_, entry)| marked(entry))
+    };
+    for (path, entry) in &entries {
+        let mut found = |rule: Rule, message: String| {
+            findings.push(Finding {
+                path: (*path).to_owned(),
+                message,
+                rule,
+            });
+        };
+        let number = entry.number;
+        for &later in &entry.superseded_by {
+            if !agree(later, &|other| other.supersedes.contains(&number)) {
+                found(
+                    Rule::EntryMarkUnmatched,
+                    format!(
+                        "entry {number} is marked superseded by entry {later}, which does not \
+                         mark that it supersedes entry {number}"
+                    ),
+                );
+            }
+        }
+        for &earlier in &entry.supersedes {
+            if !agree(earlier, &|other| other.superseded_by.contains(&number)) {
+                found(
+                    Rule::EntryMarkUnmatched,
+                    format!(
+                        "entry {number} marks that it supersedes entry {earlier}, which is not \
+                         marked superseded by entry {number}"
+                    ),
+                );
+            }
+        }
+        for &named in entry.supersedes.iter().filter(|&&named| named >= number) {
+            found(
+                Rule::EntrySupersedesLater,
+                format!(
+                    "entry {number} marks that it supersedes entry {named}, which does not come \
+                     before it"
+                ),
+            );
+        }
+    }
+}
+
 /// A field's value, unless it is absent or empty.
 pub(super) fn declared<'a>(artefact: &'a Artefact, key: &str) -> Option<&'a str> {
     artefact.field(key).filter(|value| !value.is_empty())
@@ -202,7 +280,7 @@ status = \"open\"
                 text.to_owned(),
             )],
         );
-        check(&model)
+        check(&model, &[])
             .into_iter()
             .map(|finding| finding.rule)
             .collect()
@@ -242,5 +320,140 @@ status = \"open\"
         let text = "# Minute\n\n---\nkind: minute\nstatus: open\n---\n";
         assert_eq!(frontmatter::parse(text).0, Header::Absent);
         assert_eq!(rules_for(text), [Rule::FrontmatterMissing]);
+    }
+
+    /// The entry findings in binding artefacts holding `bodies`, a superseded
+    /// one among them, under the supersession-marks proposal.
+    fn marks_for(bodies: &[&str]) -> Vec<(String, String, Rule)> {
+        let registry = crate::lint::registry::RegistryFile::parse(
+            "[class.binding]\nstatuses = [\"active\", \"superseded\"]\n\n\
+             [kind.verdict]\nclass = \"binding\"\n",
+            "registry",
+        )
+        .unwrap();
+        let files = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                let status = if index == 0 {
+                    "superseded\nsuperseded_by: v/1.md"
+                } else {
+                    "active"
+                };
+                (
+                    format!("v/{index}.md"),
+                    format!("---\nkind: verdict\nstatus: {status}\n---\n{body}"),
+                )
+            })
+            .collect();
+        let model = crate::lint::layout::read(&registry, files);
+        check(&model, &[Proposal::SupersessionMarks])
+            .into_iter()
+            .map(|finding| (finding.path, finding.message, finding.rule))
+            .collect()
+    }
+
+    #[test]
+    fn marks_agree_across_artefacts_whatever_their_status() {
+        assert!(
+            marks_for(&[
+                "1. One. **Superseded by:** 2.\n",
+                "2. Two. **Supersedes:** 1.\n"
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn each_named_entry_is_checked_on_its_own_a_missing_one_included() {
+        let found = marks_for(&["1. One. **Superseded by:** 2, 9.\n2. Two. **Supersedes:** 1.\n"]);
+        assert_eq!(
+            found,
+            [(
+                "v/0.md".to_owned(),
+                "entry 1 is marked superseded by entry 9, which does not mark that it \
+                 supersedes entry 1"
+                    .to_owned(),
+                Rule::EntryMarkUnmatched
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unmatched_supersedes_mark_falls_on_the_artefact_holding_it() {
+        let found = marks_for(&["1. One.\n", "2. Two. **Supersedes:** 1.\n"]);
+        assert_eq!(
+            found,
+            [(
+                "v/1.md".to_owned(),
+                "entry 2 marks that it supersedes entry 1, which is not marked superseded by \
+                 entry 2"
+                    .to_owned(),
+                Rule::EntryMarkUnmatched
+            )]
+        );
+    }
+
+    #[test]
+    fn a_duplicated_number_agrees_only_if_every_entry_carries_the_mark() {
+        let rules = |body: &str| -> Vec<Rule> {
+            marks_for(&[body])
+                .into_iter()
+                .map(|(_, _, rule)| rule)
+                .collect()
+        };
+        assert_eq!(
+            rules("1. One. **Superseded by:** 2.\n2. Two. **Supersedes:** 1.\n2. Again.\n"),
+            [Rule::EntryMarkUnmatched]
+        );
+        assert!(
+            rules(
+                "1. One. **Superseded by:** 2.\n2. Two. **Supersedes:** 1.\n\
+                 2. Again. **Supersedes:** 1.\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_supersedes_mark_naming_its_own_or_a_later_entry_fails() {
+        let found = marks_for(&["1. One. **Supersedes:** 1, 2. **Superseded by:** 1.\n\
+                                 2. Two. **Superseded by:** 1.\n"]);
+        let rules: Vec<(String, Rule)> = found
+            .into_iter()
+            .map(|(_, message, rule)| (message, rule))
+            .collect();
+        assert_eq!(
+            rules,
+            [
+                (
+                    "entry 1 marks that it supersedes entry 1, which does not come before it"
+                        .to_owned(),
+                    Rule::EntrySupersedesLater
+                ),
+                (
+                    "entry 1 marks that it supersedes entry 2, which does not come before it"
+                        .to_owned(),
+                    Rule::EntrySupersedesLater
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn marks_are_not_read_without_the_proposal() {
+        let registry = crate::lint::registry::RegistryFile::parse(
+            "[class.binding]\nstatuses = [\"active\"]\n\n[kind.verdict]\nclass = \"binding\"\n",
+            "registry",
+        )
+        .unwrap();
+        let model = crate::lint::layout::read(
+            &registry,
+            vec![(
+                "v.md".to_owned(),
+                "---\nkind: verdict\nstatus: active\n---\n2. Two. **Supersedes:** 9.\n".to_owned(),
+            )],
+        );
+        assert!(check(&model, &[]).is_empty());
     }
 }
