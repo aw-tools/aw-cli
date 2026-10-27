@@ -504,8 +504,8 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
     }
 
     // Only a value `aw lint` honours moves. A manifest the target already held
-    // may carry a `[proposals]` table or `[[proposals]]` array, whose span is
-    // its header alone: moving those lines would strand its keys.
+    // may carry dotted `proposals.x` keys, whose span is the first key alone:
+    // moving that line would strand the others.
     let proposals = top_level_proposals(&text)?
         .filter(|value| crate::lint::proposal::recognise(value.get_ref()).is_ok());
     let (moved, rest) = match &proposals {
@@ -543,12 +543,22 @@ pub fn record_template(root: &Path, url: &str, reference: &str, sha: &str) -> Re
     Ok(parsed)
 }
 
-/// The `proposals` a manifest's text declares at its top level, above its
-/// first table, where a template declares them.
+/// The `proposals` a manifest's text declares at its top level, as a key or
+/// dotted key above its first table header, where a template declares them. A
+/// `[proposals]`, `[[proposals]]` or `[proposals.sub]` header declares none.
 pub fn top_level_proposals(text: &str) -> Result<Option<toml::Spanned<toml::Value>>> {
     #[derive(Deserialize)]
     struct TopLevel {
         proposals: Option<toml::Spanned<toml::Value>>,
+    }
+    let document: DocumentMut = text.parse().context("parsing the manifest's top level")?;
+    let declared = match document.get("proposals") {
+        Some(Item::Value(_)) => true,
+        Some(Item::Table(table)) => table.is_dotted(),
+        _ => false,
+    };
+    if !declared {
+        return Ok(None);
     }
     let top: TopLevel = toml::from_str(text).context("parsing the manifest's top level")?;
     Ok(top.proposals)

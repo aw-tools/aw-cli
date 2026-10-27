@@ -143,8 +143,15 @@ fn init_trusts_a_non_default_template_with_the_flag() {
 
 /// A local template whose `workspace.toml` starts with `prelude`, committed.
 fn template_with_prelude(root: &Path, prelude: &str) -> std::path::PathBuf {
+    template_with_manifest(
+        root,
+        &format!("{prelude}[workspace]\nname = \"CHANGEME\"\n"),
+    )
+}
+
+/// A local template whose `workspace.toml` is `manifest`, committed.
+fn template_with_manifest(root: &Path, manifest: &str) -> std::path::PathBuf {
     let seed = local_template(root);
-    let manifest = format!("{prelude}[workspace]\nname = \"CHANGEME\"\n");
     std::fs::write(seed.join("workspace.toml"), manifest).expect("write manifest");
     let ok = std::process::Command::new("git")
         .arg("-C")
@@ -231,6 +238,40 @@ fn init_refuses_template_proposals_lint_refuses_and_writes_nothing() {
             ))
             .stderr(predicate::str::contains(message));
         assert!(!target.exists(), "a refused {value} leaves no directory");
+    }
+}
+
+#[test]
+fn init_refuses_a_dotted_proposals_key_above_the_first_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let template = template_with_prelude(temp.path(), "proposals.x = 1\n\n");
+    let target = temp.path().join("demo.workspace");
+    init_from(&template, &target)
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::starts_with(
+            "aw: template contract violation: workspace.toml ",
+        ))
+        .stderr(predicate::str::contains("`proposals` takes a list"));
+    assert!(!target.exists(), "a refused dotted key leaves no directory");
+}
+
+#[test]
+fn init_writes_a_proposals_table_header_where_the_template_put_it() {
+    for header in ["[proposals]", "[[proposals]]", "[proposals.sub]"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let body = format!("\n{header}\nnote = \"drafts under watch\"\n");
+        let template = template_with_manifest(
+            temp.path(),
+            &format!("[workspace]\nname = \"CHANGEME\"\n{body}"),
+        );
+        let target = temp.path().join("demo.workspace");
+        init_from(&template, &target).success();
+        assert_eq!(
+            after_contract(&target),
+            format!("\n[workspace]\nname = \"demo\"\n{body}"),
+            "{header}"
+        );
     }
 }
 
