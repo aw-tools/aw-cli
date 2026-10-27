@@ -97,6 +97,8 @@ rules! {
     LedgerMissing => ("ledger-missing", Failure, Layout),
     DependencyUnregistered => ("dependency-unregistered", Failure, Layout),
     ArtefactUntracked => ("artefact-untracked", Warning, Layout),
+    // Outside the contract on a commit, in the order `commit.rs` checks them.
+    EntrySupersedesSameDay => ("entry-supersedes-same-day", Warning, Layout),
     // The house style, in the order `style.rs` checks them.
     RemitsMissing => ("remits-missing", Failure, HouseStyle),
     RemitMalformed => ("remit-malformed", Failure, HouseStyle),
@@ -159,6 +161,7 @@ impl Rule {
             | Rule::LedgerMissing
             | Rule::EphemeralOpen
             | Rule::ArtefactUntracked
+            | Rule::EntrySupersedesSameDay
             | Rule::RemitsMissing
             | Rule::RemitMalformed
             | Rule::RemitRepeated
@@ -188,9 +191,9 @@ impl Rule {
     #[cfg(test)]
     pub fn proposal(self) -> Option<Proposal> {
         match self {
-            Rule::EntryMarkUnmatched | Rule::EntrySupersedesLater => {
-                Some(Proposal::SupersessionMarks)
-            }
+            Rule::EntryMarkUnmatched
+            | Rule::EntrySupersedesLater
+            | Rule::EntrySupersedesSameDay => Some(Proposal::SupersessionMarks),
             _ => None,
         }
     }

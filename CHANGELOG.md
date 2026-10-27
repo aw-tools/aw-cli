@@ -14,6 +14,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it in `proposals`, and refuses an unknown name (#72)
 - `aw init` records the template's `proposals` in the `[template]` block it
   writes, and refuses a proposal name it does not know (#73)
+- `aw lint` warns when a commit adds an entry superseding one with the same
+  date, under the supersession-marks proposal (#74)
 
 ## [0.5.0] - 2026-10-08
 
