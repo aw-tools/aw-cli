@@ -231,12 +231,24 @@ fn check_closures(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule
 }
 
 /// An entry the commit adds superseding one that carries the same date, once
-/// for each entry so named. An entry is added when no binding artefact at
-/// `HEAD` holds its number, so a mark joining a recorded entry never warns.
+/// for each entry so named. An entry is added when no artefact at `HEAD` holds
+/// its number at a path binding at `HEAD` or in the staged tree, so a mark
+/// joining a recorded entry never warns, nor does a commit that first makes a
+/// register binding.
 fn check_same_day(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, String)) {
-    let recorded: BTreeSet<u64> = binding_entries(&head.model)
-        .into_iter()
-        .map(|(_, entry)| entry.number)
+    let recorded: BTreeSet<u64> = head
+        .model
+        .artefacts
+        .iter()
+        .filter(|before| {
+            binding(&head.model, before)
+                || staged
+                    .artefacts
+                    .iter()
+                    .any(|artefact| artefact.path == before.path && binding(staged, artefact))
+        })
+        .flat_map(|before| entries::parse(&before.body).entries)
+        .map(|entry| entry.number)
         .collect();
     let entries = binding_entries(staged);
     for (path, entry) in &entries {
@@ -271,11 +283,7 @@ fn binding_entries(model: &Model) -> Vec<(&str, entries::Entry<'_>)> {
     model
         .artefacts
         .iter()
-        .filter(|artefact| {
-            declared(artefact, "kind")
-                .and_then(|kind| model.registry.kinds.get(kind))
-                .is_some_and(|class| class == BINDING)
-        })
+        .filter(|artefact| binding(model, artefact))
         .flat_map(|artefact| {
             entries::parse(&artefact.body)
                 .entries
@@ -283,6 +291,13 @@ fn binding_entries(model: &Model) -> Vec<(&str, entries::Entry<'_>)> {
                 .map(|entry| (artefact.path.as_str(), entry))
         })
         .collect()
+}
+
+/// Whether the model's registry gives an artefact's kind the binding class.
+fn binding(model: &Model, artefact: &Artefact) -> bool {
+    declared(artefact, "kind")
+        .and_then(|kind| model.registry.kinds.get(kind))
+        .is_some_and(|class| class == BINDING)
 }
 
 /// The artefact at `HEAD` a staged path continues: the file it was renamed
@@ -685,5 +700,68 @@ class = \"binding\"
         let after = "1. **Use TOML (2026-10-26).** One.\n\
                      2. **Use JSON (2026-10-26).** Two. **Supersedes:** 9.\n";
         assert!(same_day(Some(&[RECORDED]), &[after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn an_added_entry_with_a_bold_run_only_in_its_body_does_not_warn() {
+        let after = "1. **Use TOML (2026-10-26).** One. **Superseded by:** 2.\n\
+                     2. Use JSON, as ruled **on 2026-10-26**. **Supersedes:** 1.\n";
+        assert!(same_day(Some(&[RECORDED]), &[after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn an_added_entry_whose_title_nests_a_bold_run_after_its_date_does_not_warn() {
+        let after = superseded_by("**Use JSON (2026-10-26) over **TOML**.**");
+        assert!(same_day(Some(&[RECORDED]), &[&after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn titles_holding_bold_marks_in_code_spans_warn_once() {
+        let after = superseded_by("**Lint reads `**Supersedes:**` marks (2026-10-26).**");
+        assert_eq!(same_day(Some(&[RECORDED]), &[&after], MARKS).len(), 1);
+        let before = "1. **Use `**TOML**` (2026-10-26).** One.\n";
+        let after = "1. **Use `**TOML**` (2026-10-26).** One. **Superseded by:** 2.\n\
+                     2. **Use JSON (2026-10-26).** Two. **Supersedes:** 1.\n";
+        assert_eq!(same_day(Some(&[before]), &[after], MARKS).len(), 1);
+    }
+
+    #[test]
+    fn an_added_entry_whose_opening_bold_run_is_unclosed_does_not_warn() {
+        let after = "1. **Use TOML (2026-10-26).** One. **Superseded by:** 2.\n\
+                     2. **Use JSON (2026-10-26). Two, as **ruled**. **Supersedes:** 1.\n";
+        assert!(same_day(Some(&[RECORDED]), &[after], MARKS).is_empty());
+    }
+
+    #[test]
+    fn a_commit_first_making_a_register_binding_does_not_warn_of_its_settled_entries() {
+        let registry = RegistryFile::parse(REGISTRY, "registry").unwrap();
+        let file = |header: &str| {
+            let text = format!(
+                "---\n{header}---\n\
+                 1. **Use TOML (2026-10-26).** One. **Superseded by:** 2.\n\
+                 2. **Use JSON (2026-10-26).** Two. **Supersedes:** 1.\n"
+            );
+            vec![("notes/0.md".to_owned(), text)]
+        };
+        let no_registry = RegistryFile::default();
+        for (head_registry, head_header) in [
+            (&registry, "status: active\n"),
+            (&no_registry, "kind: log\nstatus: active\n"),
+        ] {
+            let change = Change {
+                staged: layout::read(&registry, file("kind: log\nstatus: active\n")),
+                head: Some(Head {
+                    model: layout::read(head_registry, file(head_header)),
+                    renames: BTreeMap::new(),
+                    deleted: BTreeSet::new(),
+                }),
+            };
+            assert!(
+                check(&change, MARKS)
+                    .iter()
+                    .all(|finding| finding.rule != Rule::EntrySupersedesSameDay),
+                "{head_header}"
+            );
+        }
     }
 }

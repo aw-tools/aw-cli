@@ -249,11 +249,10 @@ fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) ->
     entry
 }
 
-/// The first `YYYY-MM-DD` in the title of an entry's text, its first bold
-/// run.
+/// The first `YYYY-MM-DD` in the title of an entry's text, the bold run that
+/// opens it.
 fn title_date(text: &str) -> Option<&str> {
-    let (_, rest) = text.split_once("**")?;
-    let (title, _) = rest.split_once("**")?;
+    let title = title(text)?;
     let at = title.as_bytes().windows(10).position(|window| {
         window.iter().enumerate().all(|(index, byte)| match index {
             4 | 7 => *byte == b'-',
@@ -261,6 +260,29 @@ fn title_date(text: &str) -> Option<&str> {
         })
     })?;
     Some(&title[at..at + 10])
+}
+
+/// The bold run opening `text`, up to the first `**` outside code spans and
+/// not preceded by white space. A `**` preceded by white space, met first,
+/// opens a nested run and leaves no title.
+fn title(text: &str) -> Option<&str> {
+    text.strip_prefix("**")?;
+    let code = code_spans(text);
+    let mut index = 2;
+    while index < text.len() {
+        if let Some(span) = code.iter().find(|span| span.start == index) {
+            index = span.end;
+            continue;
+        }
+        if text.as_bytes()[index..].starts_with(b"**") {
+            if text[..index].ends_with(char::is_whitespace) {
+                return None;
+            }
+            return Some(&text[2..index]);
+        }
+        index += 1;
+    }
+    None
 }
 
 fn labelled(words: &[(&str, bool)], label: &[&str]) -> bool {
@@ -662,13 +684,19 @@ mod tests {
     }
 
     #[test]
-    fn the_title_date_is_the_first_date_in_the_first_bold_run() {
+    fn the_title_date_is_the_first_date_in_the_bold_run_opening_the_text() {
         assert_eq!(
             title_date("**Ruling (2026-10-26, after 2026-10-25).** Text."),
             Some("2026-10-26")
         );
-        assert_eq!(title_date("Text **2026-10-26** more."), Some("2026-10-26"));
+        assert_eq!(
+            title_date("**Lint reads `**Supersedes:**` marks (2026-10-26).** Text."),
+            Some("2026-10-26")
+        );
         for text in [
+            "Text **2026-10-26** more.",
+            "**Ruling (2026-10-26) over **TOML**.** Text.",
+            "**Ruling (2026-10-26). Text, as **ruled**.",
             "**Ruling.** Recorded 2026-10-26.",
             "Ruling recorded 2026-10-26.",
             "**Ruling (2026-10-26).",
