@@ -179,12 +179,7 @@ fn run() -> Result<bool> {
             init(dir, name, template.as_deref(), answer).map(|()| true)
         }
         Verb::Bootstrap { dir } => bootstrap(&manifest::resolve_root(dir)?),
-        Verb::Doctor { dir } => {
-            let root = manifest::resolve_root(dir)?;
-            let ok = doctor(&root)?;
-            doctor_agent_memory(&root);
-            Ok(ok)
-        }
+        Verb::Doctor { dir } => doctor(&manifest::resolve_root(dir)?),
         Verb::Status {
             dir,
             json,
@@ -588,35 +583,10 @@ fn doctor(root: &Path) -> Result<bool> {
         }
     }
 
+    doctor_agent_memory(root);
+
     let manifest = Manifest::load(root)?;
-    for repo in &manifest.repos {
-        match git::probe_remote(&repo.url, repo.branch.as_deref()) {
-            git::RemoteProbe::Reachable => {
-                check(true, reporting::doctor_remote_reachable(&repo.path));
-            }
-            git::RemoteProbe::Denied(why) => {
-                check(false, reporting::doctor_remote_denied(&repo.path, &why));
-            }
-            git::RemoteProbe::Unreachable(why) => {
-                check(
-                    false,
-                    reporting::doctor_remote_unreachable(&repo.path, &why),
-                );
-            }
-            git::RemoteProbe::MissingBranch(branch) => {
-                check(
-                    false,
-                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
-                );
-            }
-        }
-        // A member's delivery model is authoritative in its own instruction
-        // files, read live (decision 45). Surface whether one is declared as a
-        // plain informational line, outside the `check` closure: an absent model
-        // is the conservative default, never a fault, so it must not touch `ok`.
-        let declared = delivery::declared_in(&root.join(&repo.path));
-        println!("{}", reporting::doctor_delivery_model(&repo.path, declared));
-    }
+    doctor_remotes(root, &manifest, &mut check);
 
     for harness in skills::HARNESSES {
         let dir = root.join(harness.dir);
@@ -650,6 +620,41 @@ fn doctor(root: &Path) -> Result<bool> {
     }
 
     Ok(ok)
+}
+
+fn doctor_remotes(
+    root: &Path,
+    manifest: &Manifest,
+    check: &mut impl FnMut(bool, reporting::DoctorCheck),
+) {
+    for repo in &manifest.repos {
+        match git::probe_remote(&repo.url, repo.branch.as_deref()) {
+            git::RemoteProbe::Reachable => {
+                check(true, reporting::doctor_remote_reachable(&repo.path));
+            }
+            git::RemoteProbe::Denied(why) => {
+                check(false, reporting::doctor_remote_denied(&repo.path, &why));
+            }
+            git::RemoteProbe::Unreachable(why) => {
+                check(
+                    false,
+                    reporting::doctor_remote_unreachable(&repo.path, &why),
+                );
+            }
+            git::RemoteProbe::MissingBranch(branch) => {
+                check(
+                    false,
+                    reporting::doctor_remote_missing_branch(&repo.path, &branch),
+                );
+            }
+        }
+        // A member's delivery model is authoritative in its own instruction
+        // files, read live (decision 45). Surface whether one is declared as a
+        // plain informational line, outside the `check` closure: an absent model
+        // is the conservative default, never a fault, so it must not touch `ok`.
+        let declared = delivery::declared_in(&root.join(&repo.path));
+        println!("{}", reporting::doctor_delivery_model(&repo.path, declared));
+    }
 }
 
 /// A warning only: it prints and never fails `doctor`.
