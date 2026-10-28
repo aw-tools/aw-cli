@@ -114,23 +114,51 @@ fn check_transitions(
     }
 }
 
-/// Clause 3.6 as the `supersession-marks` proposal words it, marks and layout
-/// aside: how a binding artefact's body changes what `before` recorded, if it
-/// does. The recorded entries must open the body, each keeping its number and
-/// words, new entries must be numbered above the highest of them, and the words
-/// outside entries must begin with the recorded ones.
+/// Clause 3.6 as the `supersession-marks` proposal words it, marks, legacy
+/// notes and layout aside: how a binding artefact's body changes what `before`
+/// recorded, if it does. The recorded entries must open the body, each keeping
+/// its number, its words and every entry its two sets name, new entries must be
+/// numbered above the highest of them, and the words outside entries must begin
+/// with the recorded ones.
 fn rewritten(before: &str, after: &str) -> Option<String> {
     let (was, now) = (entries::parse(before), entries::parse(after));
     for (index, recorded) in was.entries.iter().enumerate() {
-        let kept = now
+        let Some(entry) = now
             .entries
             .get(index)
-            .is_some_and(|entry| entry.number == recorded.number && entry.words == recorded.words);
-        if !kept {
+            .filter(|entry| entry.number == recorded.number && entry.words == recorded.words)
+        else {
             return Some(format!(
                 "binding artefact changes or moves entry {}, already recorded; new entries must \
                  follow the recorded ones",
                 recorded.number
+            ));
+        };
+        let number = entry.number;
+        let supersedes = |entry: &entries::Entry| -> BTreeSet<u64> {
+            entry.supersedes.iter().copied().collect()
+        };
+        if let Some(named) = supersedes(recorded).difference(&supersedes(entry)).next() {
+            return Some(format!(
+                "binding artefact drops entry {named} from what entry {number} supersedes, \
+                 already recorded; an entry once named must stay named"
+            ));
+        }
+        let superseded_by = |entry: &entries::Entry| -> BTreeSet<u64> {
+            entry
+                .superseded_by
+                .iter()
+                .chain(&entry.noted)
+                .copied()
+                .collect()
+        };
+        if let Some(named) = superseded_by(recorded)
+            .difference(&superseded_by(entry))
+            .next()
+        {
+            return Some(format!(
+                "binding artefact drops entry {named} from what supersedes entry {number}, \
+                 already recorded; an entry once named must stay named"
             ));
         }
     }
@@ -548,6 +576,68 @@ class = \"binding\"
             )
         );
         assert_eq!(rewritten(before, "Intro\ntext.\n\n1. One.\n"), None);
+    }
+
+    #[test]
+    fn under_the_proposal_a_number_dropped_from_a_mark_fails_naming_it() {
+        let before = "1. One. **Superseded by:** 2, 3.\n2. Two. **Supersedes:** 1.\n\
+                      3. Three. **Supersedes:** 1.\n";
+        assert_eq!(
+            rewritten(
+                before,
+                "1. One. **Superseded by:** 3.\n2. Two. **Supersedes:** 1.\n\
+                 3. Three. **Supersedes:** 1.\n"
+            )
+            .as_deref(),
+            Some(
+                "binding artefact drops entry 2 from what supersedes entry 1, already recorded; \
+                 an entry once named must stay named"
+            )
+        );
+        assert_eq!(
+            rewritten(
+                before,
+                "1. One. **Superseded by:** 2, 3.\n2. Two.\n3. Three. **Supersedes:** 1.\n"
+            )
+            .as_deref(),
+            Some(
+                "binding artefact drops entry 1 from what entry 2 supersedes, already recorded; \
+                 an entry once named must stay named"
+            )
+        );
+    }
+
+    #[test]
+    fn under_the_proposal_marks_may_move_reorder_and_gain_numbers() {
+        let before = "1. One. **Superseded by:** 2.\n2. Two. **Supersedes:** 1.\n3. Three.\n";
+        assert_eq!(
+            rewritten(
+                before,
+                "1. **Superseded by:** 3, 2. One.\n2. Two. **Supersedes:** 1.\n\
+                 3. Three. **Supersedes:** 1.\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn under_the_proposal_a_legacy_note_may_become_a_mark_but_not_vanish() {
+        let before = "1. One.\n   - _SUPERSEDED by 2 (this bullet only)._\n2. Two.\n";
+        assert_eq!(
+            rewritten(
+                before,
+                "1. One.\n   - _**Superseded by:** 2. (this bullet only)._\n\
+                 2. Two. **Supersedes:** 1.\n"
+            ),
+            None
+        );
+        assert_eq!(
+            rewritten("1. One. SUPERSEDED by 2.\n2. Two.\n", "1. One.\n2. Two.\n").as_deref(),
+            Some(
+                "binding artefact drops entry 2 from what supersedes entry 1, already recorded; \
+                 an entry once named must stay named"
+            )
+        );
     }
 
     /// The model of binding artefacts `notes/0.md` onwards, holding `bodies`.

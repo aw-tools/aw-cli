@@ -281,8 +281,8 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 68, "the overlay holds 68 fixtures");
-    assert_eq!(with_steps(&dirs), 28, "28 of them hold commits");
+    assert_eq!(dirs.len(), 85, "the overlay holds 85 fixtures");
+    assert_eq!(with_steps(&dirs), 42, "42 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -308,7 +308,7 @@ fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(Strin
 #[test]
 fn the_proposals_passing_3_6_fixtures_fail_revision_1s_3_6() {
     let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
-    assert_eq!(reached.len(), 4, "{reached:?}");
+    assert_eq!(reached.len(), 12, "{reached:?}");
     for (name, rules) in reached {
         assert_eq!(rules, [Rule::BindingRewritten], "{name}");
     }
@@ -317,7 +317,7 @@ fn the_proposals_passing_3_6_fixtures_fail_revision_1s_3_6() {
 #[test]
 fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
     let reached = rules_without_the_opt_in(|file| file.clause == "3.8" || file.clause == "3.9");
-    assert_eq!(reached.len(), 8, "{reached:?}");
+    assert_eq!(reached.len(), 11, "{reached:?}");
     for (name, rules) in reached {
         assert!(rules.is_empty(), "{name}: {rules:?}");
     }
