@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-28
+
 ### Fixed
 
 - `aw lint` fails a commit removing a number from a supersession mark or
