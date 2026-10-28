@@ -2,10 +2,14 @@
 //! the `supersession-marks` proposal's fixtures fix.
 //!
 //! An entry is an item of a numbered list at the top level of the body,
-//! identified by the number written before it. A mark is `**Supersedes:**` or
-//! `**Superseded by:**`, then entry numbers separated by commas and ending in a
-//! full stop, read word by word so any white space may wrap it. Code spans and
-//! fenced blocks hide marks; their words stay.
+//! identified by the number written before it, its nested lists included. A
+//! mark is `**Supersedes:**` or `**Superseded by:**`, then entry numbers
+//! separated by commas and ending in a full stop. A legacy note is
+//! `SUPERSEDED by`, then entry numbers separated by commas and any full stop
+//! directly after the last. Both are read word by word so any white space may
+//! wrap them, and either may begin or end inside a word, what is left of that
+//! word staying a word. Code spans and fenced blocks hide marks and notes;
+//! their words stay.
 
 use std::ops::Range;
 
@@ -25,12 +29,26 @@ pub struct Entry<'a> {
     pub supersedes: Vec<u64>,
     /// The entries its superseded-by marks name.
     pub superseded_by: Vec<u64>,
+    /// The entries its legacy notes name. Only clause 3.6 reads them: a note
+    /// is not a superseded-by mark, so clauses 3.8 and 3.9 never see it.
+    pub noted: Vec<u64>,
     /// The date its title carries.
     pub date: Option<String>,
 }
 
-const SUPERSEDES: &[&str] = &["**Supersedes:**"];
-const SUPERSEDED_BY: &[&str] = &["**Superseded", "by:**"];
+#[derive(Clone, Copy, PartialEq)]
+enum Label {
+    Supersedes,
+    SupersededBy,
+    Note,
+}
+
+/// Each label's words; the first may end a longer word.
+const LABELS: [(Label, &[&str]); 3] = [
+    (Label::Supersedes, &["**Supersedes:**"]),
+    (Label::SupersededBy, &["**Superseded", "by:**"]),
+    (Label::Note, &["SUPERSEDED", "by"]),
+];
 
 /// An entry being read: its number, and the byte range of each of its lines
 /// in the body with whether the line is fenced code.
@@ -196,52 +214,64 @@ fn closes(line: &str, (byte, length): (u8, usize)) -> bool {
     run >= length && line[run..].trim().is_empty()
 }
 
-/// An entry's words and marks, from its lines.
+/// An entry's words, marks and legacy notes, from its lines.
 fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) -> Entry<'a> {
-    // Each word, and whether it lies outside code.
-    let mut words: Vec<(&str, bool)> = Vec::new();
+    // The byte ranges in `body` of each word, and of each code span and
+    // fenced line.
+    let mut words = Vec::new();
+    let mut code = Vec::new();
     let mut paragraph: Option<Range<usize>> = None;
     for (range, fenced) in lines {
-        let text = &body[range.clone()];
-        if *fenced || text.trim().is_empty() {
-            if let Some(range) = paragraph.take() {
-                words.extend(paragraph_words(&body[range]));
+        words.extend(split(body, range.clone()));
+        if *fenced || body[range.clone()].trim().is_empty() {
+            code.extend(
+                paragraph
+                    .take()
+                    .into_iter()
+                    .flat_map(|open| spans(body, open)),
+            );
+            if *fenced {
+                code.push(range.clone());
             }
-            words.extend(text.split_whitespace().map(|word| (word, false)));
         } else {
             paragraph = Some(paragraph.map_or(range.clone(), |open| open.start..range.end));
         }
     }
-    if let Some(range) = paragraph {
-        words.extend(paragraph_words(&body[range]));
-    }
+    code.extend(paragraph.into_iter().flat_map(|open| spans(body, open)));
+    let plain = |range: Range<usize>| {
+        !code
+            .iter()
+            .any(|span| span.start < range.end && range.start < span.end)
+    };
 
     let mut entry = Entry {
         number,
         words: Vec::new(),
         supersedes: Vec::new(),
         superseded_by: Vec::new(),
+        noted: Vec::new(),
         date: None,
     };
     let mut index = 0;
     while index < words.len() {
-        let rest = &words[index..];
-        let mark = [SUPERSEDES, SUPERSEDED_BY]
-            .into_iter()
-            .find(|label| labelled(rest, label))
-            .and_then(|label| {
-                let (numbers, count) = numbers(&rest[label.len()..])?;
-                Some((label, numbers, label.len() + count))
-            });
-        if let Some((label, numbers, length)) = mark {
-            if label == SUPERSEDES {
-                entry.supersedes.extend(numbers);
-            } else {
-                entry.superseded_by.extend(numbers);
-            }
-            index += length;
+        let found = mark(body, &words[index..]).filter(|(_, _, start, _, end)| plain(*start..*end));
+        let Some((label, numbers, start, last, end)) = found else {
+            entry.words.push(&body[words[index].clone()]);
+            index += 1;
+            continue;
+        };
+        if words[index].start < start {
+            entry.words.push(&body[words[index].start..start]);
+        }
+        match label {
+            Label::Supersedes => entry.supersedes.extend(numbers),
+            Label::SupersededBy => entry.superseded_by.extend(numbers),
+            Label::Note => entry.noted.extend(numbers),
+        }
+        index += last;
+        if end < words[index].end {
+            words[index].start = end;
         } else {
-            entry.words.push(rest[0].0);
             index += 1;
         }
     }
@@ -285,55 +315,75 @@ fn title(text: &str) -> Option<&str> {
     None
 }
 
-fn labelled(words: &[(&str, bool)], label: &[&str]) -> bool {
-    words.len() >= label.len()
-        && words
+/// The mark or legacy note beginning in the first of `words`, given as byte
+/// ranges in `body`: its label, the numbers it names, the byte it begins at,
+/// and the index of the word it ends in with the byte it ends at.
+fn mark(body: &str, words: &[Range<usize>]) -> Option<(Label, Vec<u64>, usize, usize, usize)> {
+    LABELS.into_iter().find_map(|(label, parts)| {
+        let before = body[words[0].clone()].strip_suffix(parts[0])?;
+        let labelled = words
+            .get(1..parts.len())?
             .iter()
-            .zip(label)
-            .all(|((word, plain), part)| *plain && word == part)
-}
-
-/// The numbers a mark's list names, and how many words the list takes.
-fn numbers(words: &[(&str, bool)]) -> Option<(Vec<u64>, usize)> {
-    let mut numbers = Vec::new();
-    for (count, (word, plain)) in words.iter().enumerate() {
-        if !plain {
+            .zip(&parts[1..])
+            .all(|(word, part)| body[word.clone()] == **part);
+        if !labelled {
             return None;
         }
-        let (listed, ends) = match word.strip_suffix(',') {
-            Some(listed) => (listed, false),
-            None => (word.strip_suffix('.')?, true),
-        };
-        for text in listed.split(',') {
-            numbers.push(number(text)?);
-        }
-        if ends {
-            return Some((numbers, count + 1));
-        }
-    }
-    None
+        let (numbers, last, end) = list(body, &words[parts.len()..], label == Label::Note)?;
+        Some((
+            label,
+            numbers,
+            words[0].start + before.len(),
+            parts.len() + last,
+            end,
+        ))
+    })
 }
 
-fn number(text: &str) -> Option<u64> {
-    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
+/// The numbers a list opening `words` names, the index of the word it ends in
+/// and the byte it ends at: after the full stop that ends a mark's list, or
+/// after a legacy note's last number and any full stop directly after it.
+fn list(body: &str, words: &[Range<usize>], note: bool) -> Option<(Vec<u64>, usize, usize)> {
+    let mut numbers: Vec<u64> = Vec::new();
+    // Where a legacy note ends if no number follows.
+    let mut last = None;
+    for (index, word) in words.iter().enumerate() {
+        let mut at = word.start;
+        loop {
+            let digits = body[at..word.end]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            if digits == 0 {
+                return last
+                    .filter(|_| note)
+                    .map(|(index, at)| (numbers, index, at));
+            }
+            numbers.push(body[at..at + digits].parse().ok()?);
+            at += digits;
+            last = Some((index, at));
+            match body.as_bytes()[at..word.end].first() {
+                Some(b'.') => return Some((numbers, index, at + 1)),
+                Some(b',') if at + 1 == word.end => break,
+                Some(b',') => at += 1,
+                _ if note => return Some((numbers, index, at)),
+                _ => return None,
+            }
+        }
     }
-    text.parse().ok()
+    last.filter(|_| note)
+        .map(|(index, at)| (numbers, index, at))
 }
 
-/// The words of a paragraph, each with whether it lies wholly outside code
-/// spans.
-fn paragraph_words(text: &str) -> Vec<(&str, bool)> {
-    let code = code_spans(text);
+/// The byte ranges of the words in `range` of `body`.
+fn split(body: &str, range: Range<usize>) -> Vec<Range<usize>> {
     let mut words = Vec::new();
     let mut start = None;
+    let text = &body[range.clone()];
     for (index, character) in text.char_indices().chain([(text.len(), ' ')]) {
         match (character.is_whitespace(), start) {
             (true, Some(from)) => {
-                let plain = !code
-                    .iter()
-                    .any(|span| span.start < index && from < span.end);
-                words.push((&text[from..index], plain));
+                words.push(range.start + from..range.start + index);
                 start = None;
             }
             (false, None) => start = Some(index),
@@ -341,6 +391,14 @@ fn paragraph_words(text: &str) -> Vec<(&str, bool)> {
         }
     }
     words
+}
+
+/// The byte ranges in `body` of the code spans of the paragraph at `range`.
+fn spans(body: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    code_spans(&body[range.clone()])
+        .into_iter()
+        .map(|span| range.start + span.start..range.start + span.end)
+        .collect()
 }
 
 /// The byte ranges of a paragraph's code spans, their backticks included: a
@@ -725,6 +783,68 @@ mod tests {
     fn a_mark_before_the_title_is_not_the_title() {
         let body = parse("5. **Supersedes:** 3. **A ruling (2026-10-26).** Text.\n");
         assert_eq!(body.entries[0].date.as_deref(), Some("2026-10-26"));
+    }
+
+    #[test]
+    fn a_legacy_note_names_entries_apart_from_the_marks() {
+        let body = parse("1. One. SUPERSEDED by 2,\n   3. **Superseded by:** 4.\n");
+        let entry = &body.entries[0];
+        assert_eq!(entry.noted, [2, 3]);
+        assert_eq!(entry.superseded_by, [4]);
+        assert_eq!(entry.words, ["One."]);
+    }
+
+    #[test]
+    fn a_legacy_note_takes_a_full_stop_directly_after_its_last_number() {
+        for (text, words) in [
+            ("1. One. SUPERSEDED by 2. Two.\n", vec!["One.", "Two."]),
+            (
+                "1. One. SUPERSEDED by 2 (in part).\n",
+                vec!["One.", "(in", "part)."],
+            ),
+            (
+                "1. One. SUPERSEDED by 2, then 3.\n",
+                vec!["One.", ",", "then", "3."],
+            ),
+        ] {
+            let entry = &parse(text).entries[0];
+            assert_eq!(entry.noted, [2], "{text}");
+            assert_eq!(entry.words, words, "{text}");
+        }
+        assert!(
+            parse("1. SUPERSEDED by none.\n").entries[0]
+                .noted
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_mark_or_note_inside_a_word_leaves_the_rest_of_it_a_word() {
+        let body = parse(
+            "1. One.\n   - _SUPERSEDED by 2 (this bullet only)._\n   \
+             - _**Superseded by:** 3.)_ (**Supersedes:** 0.)\n",
+        );
+        let entry = &body.entries[0];
+        assert_eq!(entry.noted, [2]);
+        assert_eq!(entry.superseded_by, [3]);
+        assert_eq!(entry.supersedes, [0]);
+        assert_eq!(
+            entry.words,
+            [
+                "One.", "-", "_", "(this", "bullet", "only)._", "-", "_", ")_", "(", ")"
+            ]
+        );
+    }
+
+    #[test]
+    fn code_hides_a_legacy_note() {
+        for text in [
+            "1. One. `SUPERSEDED by 2.`\n",
+            "1. One. ``x SUPERSEDED\n   by 2. y``\n",
+            "1. One.\n\n   ```\n   SUPERSEDED by 2.\n   ```\n",
+        ] {
+            assert!(parse(text).entries[0].noted.is_empty(), "{text}");
+        }
     }
 
     #[test]
