@@ -23,7 +23,7 @@ pub struct Body<'a> {
 
 pub struct Entry<'a> {
     pub number: u64,
-    /// The words after its number, its marks left out.
+    /// The words after its number, its marks and legacy notes left out.
     pub words: Vec<&'a str>,
     /// The entries its supersedes marks name.
     pub supersedes: Vec<u64>,
@@ -347,7 +347,7 @@ fn list(body: &str, words: &[Range<usize>], note: bool) -> Option<(Vec<u64>, usi
     let mut numbers: Vec<u64> = Vec::new();
     // Where a legacy note ends if no number follows.
     let mut last = None;
-    for (index, word) in words.iter().enumerate() {
+    'words: for (index, word) in words.iter().enumerate() {
         let mut at = word.start;
         loop {
             let digits = body[at..word.end]
@@ -355,9 +355,7 @@ fn list(body: &str, words: &[Range<usize>], note: bool) -> Option<(Vec<u64>, usi
                 .take_while(u8::is_ascii_digit)
                 .count();
             if digits == 0 {
-                return last
-                    .filter(|_| note)
-                    .map(|(index, at)| (numbers, index, at));
+                break 'words;
             }
             numbers.push(body[at..at + digits].parse().ok()?);
             at += digits;
@@ -366,7 +364,7 @@ fn list(body: &str, words: &[Range<usize>], note: bool) -> Option<(Vec<u64>, usi
                 Some(b'.') => return Some((numbers, index, at + 1)),
                 Some(b',') if at + 1 == word.end => break,
                 Some(b',') => at += 1,
-                _ if note => return Some((numbers, index, at)),
+                _ if note => break 'words,
                 _ => return None,
             }
         }

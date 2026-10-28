@@ -8,8 +8,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- `aw lint` fails a commit that drops an entry a supersession mark names, and
-  accepts rewriting a `SUPERSEDED by` note as a mark (#76)
+- `aw lint` fails a commit removing a number from a supersession mark or
+  `SUPERSEDED by` note, and accepts rewriting the note as a mark (#76)
 
 ## [0.6.0] - 2026-10-27
 

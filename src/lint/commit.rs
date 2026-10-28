@@ -119,9 +119,7 @@ fn check_transitions(
 /// recorded, if it does. The recorded entries must open the body, each keeping
 /// its number, its words and every entry its two sets name, new entries must be
 /// numbered above the highest of them, and the words outside entries must begin
-/// with the recorded ones. An entry's supersedes set is what its supersedes
-/// marks name, its superseded-by set what its superseded-by marks and legacy
-/// notes name.
+/// with the recorded ones.
 fn rewritten(before: &str, after: &str) -> Option<String> {
     let (was, now) = (entries::parse(before), entries::parse(after));
     for (index, recorded) in was.entries.iter().enumerate() {
