@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `aw lint` accepts a change to text outside a binding artefact's entries under
+  the supersession-marks proposal, once the artefact holds an entry (#78)
+
 ## [0.6.1] - 2026-10-28
 
 ### Fixed

@@ -118,8 +118,8 @@ fn check_transitions(
 /// notes and layout aside: how a binding artefact's body changes what `before`
 /// recorded, if it does. The recorded entries must open the body, each keeping
 /// its number, its words and every entry its two sets name, new entries must be
-/// numbered above the highest of them, and the words outside entries must begin
-/// with the recorded ones.
+/// numbered above the highest of them, and, where `before` holds no entry, the
+/// words outside entries must begin with the recorded ones.
 fn rewritten(before: &str, after: &str) -> Option<String> {
     let (was, now) = (entries::parse(before), entries::parse(after));
     for (index, recorded) in was.entries.iter().enumerate() {
@@ -175,7 +175,7 @@ fn rewritten(before: &str, after: &str) -> Option<String> {
              new entries must follow the recorded ones"
         ));
     }
-    (!now.outside.starts_with(&was.outside)).then(|| {
+    (was.entries.is_empty() && !now.outside.starts_with(&was.outside)).then(|| {
         "binding artefact changes body content already recorded outside its entries; new \
          content must follow it"
             .to_owned()
@@ -566,8 +566,8 @@ class = \"binding\"
     }
 
     #[test]
-    fn under_the_proposal_words_outside_entries_must_extend_the_recorded_ones() {
-        let before = "Intro text.\n\n1. One.\n";
+    fn under_the_proposal_words_must_extend_the_recorded_ones_where_no_entry_is_recorded() {
+        let before = "Intro text.\n";
         assert_eq!(
             rewritten(before, "Intro, rewritten.\n\n1. One.\n").as_deref(),
             Some(
@@ -576,6 +576,12 @@ class = \"binding\"
             )
         );
         assert_eq!(rewritten(before, "Intro\ntext.\n\n1. One.\n"), None);
+    }
+
+    #[test]
+    fn under_the_proposal_words_outside_recorded_entries_may_change() {
+        let before = "Intro text.\n\n1. One.\n\nCoda.\n";
+        assert_eq!(rewritten(before, "Intro, rewritten.\n\n1. One.\n"), None);
     }
 
     #[test]

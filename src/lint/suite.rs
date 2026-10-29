@@ -3,9 +3,10 @@
 //! A fixture is a directory holding `fixture.toml` (the verdict, the globs
 //! declaring which files are artefacts, an optional revision) and a tree:
 //! `registry.toml`, an optional `units.toml`, and the files themselves. A
-//! fixture whose clause concerns commits holds its trees under `steps/01` and
-//! `steps/02`; the runner commits the first, stages the second and runs staged
-//! mode. The copy under `tests/suite/` names the commit it was taken from.
+//! fixture whose clause concerns commits holds its trees under `steps/01`,
+//! `steps/02` and onwards; the runner commits each in turn, running staged mode
+//! on each but the first before committing it. The copy under `tests/suite/`
+//! names the commit it was taken from.
 //!
 //! A proposal's fixtures sit under `tests/suite/proposals/<name>/` and run
 //! over revision 1's, a fixture of the same name taking the place of
@@ -45,59 +46,72 @@ struct UnitEntry {
 
 struct Fixture {
     file: FixtureFile,
-    change: Change,
+    changes: Vec<Change>,
 }
 
 fn read(dir: &Path) -> Fixture {
     let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
     let steps = dir.join("steps");
-    let change = if steps.exists() {
+    let changes = if steps.exists() {
         staged(&steps, &file.artefacts)
     } else {
         let mut files = files(dir);
         files.remove("fixture.toml");
-        Change {
+        vec![Change {
             staged: model(&files, &file.artefacts),
             head: None,
-        }
+        }]
     };
-    Fixture { file, change }
+    Fixture { file, changes }
 }
 
-/// Commit `steps/01` in a fresh repository, stage `steps/02` over it, and
-/// read both trees from git as staged mode does.
-fn staged(steps: &Path, globs: &[String]) -> Change {
+/// Commit `steps/01`, `steps/02` and onwards in turn in a fresh repository,
+/// reading each step but the first, once staged over the one before, from git
+/// as staged mode does.
+fn staged(steps: &Path, globs: &[String]) -> Vec<Change> {
     let repository = tempfile::tempdir().unwrap();
     let root = repository.path();
     git(root, &["init", "--quiet"]);
-    copy(&steps.join("01"), root);
-    git(root, &["add", "--all"]);
-    git(root, &["commit", "--quiet", "--message", "01"]);
-    for entry in std::fs::read_dir(root).unwrap() {
-        let path = entry.unwrap().path();
-        if path.file_name() == Some(".git".as_ref()) {
-            continue;
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(steps)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    dirs.sort();
+    let mut changes = Vec::new();
+    for (position, dir) in dirs.iter().enumerate() {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name() == Some(".git".as_ref()) {
+                continue;
+            }
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
         }
-        if path.is_dir() {
-            std::fs::remove_dir_all(path).unwrap();
-        } else {
-            std::fs::remove_file(path).unwrap();
+        copy(dir, root);
+        git(root, &["add", "--all"]);
+        if position > 0 {
+            let index = Tree::index(root).unwrap();
+            let head = Tree::head(root).unwrap();
+            let (renames, deleted) = tree::moves(root, &head, &index).unwrap();
+            changes.push(Change {
+                staged: model(&tree_files(&index), globs),
+                head: Some(Head {
+                    model: model(&tree_files(&head), globs),
+                    renames,
+                    deleted,
+                }),
+            });
         }
+        let step = dir.file_name().unwrap().to_str().unwrap();
+        git(
+            root,
+            &["commit", "--quiet", "--allow-empty", "--message", step],
+        );
     }
-    copy(&steps.join("02"), root);
-    git(root, &["add", "--all"]);
-
-    let index = Tree::index(root).unwrap();
-    let head = Tree::head(root).unwrap();
-    let (renames, deleted) = tree::moves(root, &head, &index).unwrap();
-    Change {
-        staged: model(&tree_files(&index), globs),
-        head: Some(Head {
-            model: model(&tree_files(&head), globs),
-            renames,
-            deleted,
-        }),
-    }
+    changes
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -192,12 +206,16 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The verdict `aw lint` reaches on a fixture under `proposals`: the
-/// refusal, or the findings.
+/// refusal, or the findings of every commit.
 fn verdict(fixture: &Fixture, proposals: &[Proposal]) -> Result<Vec<rules::Finding>, Refusal> {
     if let Some(revision) = &fixture.file.revision {
         super::recognise(revision)?;
     }
-    Ok(commit::check(&fixture.change, proposals))
+    Ok(fixture
+        .changes
+        .iter()
+        .flat_map(|change| commit::check(change, proposals))
+        .collect())
 }
 
 fn suite() -> PathBuf {
@@ -281,8 +299,8 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 85, "the overlay holds 85 fixtures");
-    assert_eq!(with_steps(&dirs), 42, "42 of them hold commits");
+    assert_eq!(dirs.len(), 94, "the overlay holds 94 fixtures");
+    assert_eq!(with_steps(&dirs), 51, "51 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -306,9 +324,11 @@ fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(Strin
 }
 
 #[test]
-fn the_proposals_passing_3_6_fixtures_fail_revision_1s_3_6() {
-    let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
-    assert_eq!(reached.len(), 12, "{reached:?}");
+fn the_proposals_passing_3_6_fixtures_but_a_first_entry_fail_revision_1s_3_6() {
+    let mut reached =
+        rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
+    assert_eq!(reached.len(), 19, "{reached:?}");
+    reached.retain(|(name, _)| name != "3.6-first-entry-added");
     for (name, rules) in reached {
         assert_eq!(rules, [Rule::BindingRewritten], "{name}");
     }
@@ -355,8 +375,7 @@ fn every_cited_clause_has_a_failing_fixture() {
 #[test]
 fn an_undeclared_file_is_not_read() {
     let fixture = read(&suite().join("2.6-undeclared-file-exempt"));
-    let paths: Vec<&str> = fixture
-        .change
+    let paths: Vec<&str> = fixture.changes[0]
         .staged
         .artefacts
         .iter()
