@@ -325,12 +325,15 @@ fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(Strin
 
 #[test]
 fn the_proposals_passing_3_6_fixtures_but_a_first_entry_fail_revision_1s_3_6() {
-    let mut reached =
-        rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
+    let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
     assert_eq!(reached.len(), 19, "{reached:?}");
-    reached.retain(|(name, _)| name != "3.6-first-entry-added");
     for (name, rules) in reached {
-        assert_eq!(rules, [Rule::BindingRewritten], "{name}");
+        let expected: &[Rule] = if name == "3.6-first-entry-added" {
+            &[]
+        } else {
+            &[Rule::BindingRewritten]
+        };
+        assert_eq!(rules, expected, "{name}");
     }
 }
 
