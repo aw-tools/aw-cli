@@ -8,4 +8,4 @@ licence. Change a fixture there first, then copy it here again.
 
 `proposals/supersession-marks/` is taken from
 `suite/proposals/supersession-marks/` in the same repository at commit
-`fd8db4fddfb82f876cbd7946ddaa3589c2827ab3`.
+`1f4cb2b1eb65ea416bbf82c08eb951828d8d12d1`.

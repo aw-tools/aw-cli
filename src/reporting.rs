@@ -553,6 +553,54 @@ pub fn lint_warning(finding: &str) -> String {
     format!("warning: {finding}")
 }
 
+/// Words a format change removes or inserts, quoted, or `nothing`.
+pub fn lint_words(words: &[String]) -> String {
+    if words.is_empty() {
+        "nothing".to_owned()
+    } else {
+        format!("\"{}\"", words.join(" "))
+    }
+}
+
+/// The line opening the report on a commit declaring a format change, on
+/// stderr.
+pub fn lint_format_change(paths: &[String], groups: usize) -> String {
+    let plural = if groups == 1 { "" } else { "s" };
+    format!(
+        "format change declared in {}: {groups} group{plural} of changed words",
+        paths.join(", ")
+    )
+}
+
+/// One group of a format change's changes of words: what each removes and
+/// inserts, how many there are, and each artefact they fall in with the
+/// recorded entries they touch there. Nothing is cut short.
+pub fn lint_format_group(
+    removed: &[String],
+    inserted: &[String],
+    changes: usize,
+    places: &[(String, Vec<u64>)],
+) -> String {
+    let plural = if changes == 1 { "" } else { "s" };
+    let places: Vec<String> = places
+        .iter()
+        .map(|(path, entries)| {
+            let numbers: Vec<String> = entries.iter().map(u64::to_string).collect();
+            match entries.len() {
+                0 => path.clone(),
+                1 => format!("{path} entry {}", numbers[0]),
+                _ => format!("{path} entries {}", numbers.join(", ")),
+            }
+        })
+        .collect();
+    format!(
+        "  {} -> {}, {changes} change{plural} in {}",
+        lint_words(removed),
+        lint_words(inserted),
+        places.join("; ")
+    )
+}
+
 /// The count closing an `aw lint` run, on stderr.
 pub fn lint_count(failures: usize, warnings: usize) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
@@ -584,6 +632,39 @@ mod tests {
         assert_eq!(
             lint_warning("context/a.md: still open [ephemeral-open]"),
             "warning: context/a.md: still open [ephemeral-open]"
+        );
+    }
+
+    #[test]
+    fn a_format_change_report_names_every_touched_entry_with_its_artefact() {
+        let words = |words: &[&str]| -> Vec<String> {
+            words.iter().map(|word| (*word).to_owned()).collect()
+        };
+        assert_eq!(
+            lint_format_change(&["context/DECISIONS.md".to_owned()], 1),
+            "format change declared in context/DECISIONS.md: 1 group of changed words"
+        );
+        assert_eq!(
+            lint_format_group(
+                &words(&["**Rejected:**"]),
+                &words(&["**Set", "aside:**"]),
+                3,
+                &[("context/DECISIONS.md".to_owned(), vec![1, 4, 9])]
+            ),
+            "  \"**Rejected:**\" -> \"**Set aside:**\", 3 changes in context/DECISIONS.md \
+             entries 1, 4, 9"
+        );
+        assert_eq!(
+            lint_format_group(
+                &words(&["##"]),
+                &[],
+                1,
+                &[
+                    ("verdicts/1.md".to_owned(), vec![1]),
+                    ("verdicts/2.md".to_owned(), Vec::new())
+                ]
+            ),
+            "  \"##\" -> nothing, 1 change in verdicts/1.md entry 1; verdicts/2.md"
         );
     }
 

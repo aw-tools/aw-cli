@@ -1108,6 +1108,72 @@ fn lint_warns_of_an_open_ephemeral_only_in_a_commit_that_stages_it() {
         .stderr(warning);
 }
 
+#[test]
+fn lint_reports_a_declared_format_change_on_stderr_and_passes() {
+    let root = lint_fixture(
+        "\n[template]\ncontract = 1\nproposals = [\"supersession-marks\"]\n",
+        "---\nkind: doctrine\nstatus: live\n---\n",
+    );
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} succeeds");
+    };
+    std::fs::write(
+        root.path().join("context/artefacts.toml"),
+        format!(
+            "{LINT_REGISTRY}\n[class.binding]\nstatuses = [\"active\", \"superseded\"]\n\n\
+             [kind.decision]\nclass = \"binding\"\n"
+        ),
+    )
+    .expect("write registry");
+    let decisions = root.path().join("context/DECISIONS.md");
+    let register = |header: &str, label: &str| {
+        format!(
+            "---\nkind: decision\nstatus: active\n{header}---\n\n\
+             1. Use TOML. **{label}:** JSON.\n2. Use git. **{label}:** Mercurial.\n\
+             3. Use YAML. **{label}:** TOML.\n"
+        )
+    };
+    std::fs::write(&decisions, register("", "Rejected")).expect("write register");
+    git(&["add", "context"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        "seed",
+    ]);
+
+    std::fs::write(
+        &decisions,
+        register("reformatted: 2026-10-29\n", "Set aside"),
+    )
+    .expect("relabel the register");
+    git(&["add", "context"]);
+    aw().arg("lint")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            "format change declared in context/DECISIONS.md: 1 group of changed words\n  \
+             \"**Rejected:**\" -> \"**Set aside:**\", 3 changes in context/DECISIONS.md entries \
+             1, 2, 3\n0 failures, 0 warnings\n",
+        );
+}
+
 #[cfg(unix)]
 #[test]
 fn lint_skips_a_symlinked_artefact_in_both_modes() {

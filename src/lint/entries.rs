@@ -2,9 +2,11 @@
 //! the `supersession-marks` proposal's fixtures fix.
 //!
 //! An entry is an item of a numbered list at the top level of the body,
-//! identified by the number written before it, its nested lists included. A
-//! mark is `**Supersedes:**` or `**Superseded by:**`, then entry numbers
-//! separated by commas and ending in a full stop. A legacy note is
+//! identified by the number written before it. It runs to the next such item,
+//! top-level heading or top-level thematic break, or the end of the body, so
+//! whatever lies between, nested lists and unindented paragraphs included, is
+//! its own. A mark is `**Supersedes:**` or `**Superseded by:**`, then entry
+//! numbers separated by commas and ending in a full stop. A legacy note is
 //! `SUPERSEDED by`, then entry numbers separated by commas and any full stop
 //! directly after the last. Both are read word by word so any white space may
 //! wrap them, and either may begin or end inside a word, what is left of that
@@ -23,6 +25,10 @@ pub struct Body<'a> {
 
 pub struct Entry<'a> {
     pub number: u64,
+    /// Its number as written, with the full stop after it.
+    pub marker: &'a str,
+    /// How many words outside entries come before it.
+    pub preceded: usize,
     /// The words after its number, its marks and legacy notes left out.
     pub words: Vec<&'a str>,
     /// The entries its supersedes marks name.
@@ -50,18 +56,40 @@ const LABELS: [(Label, &[&str]); 3] = [
     (Label::Note, &["SUPERSEDED", "by"]),
 ];
 
-/// An entry being read: its number, and the byte range of each of its lines
-/// in the body with whether the line is fenced code.
-type Lines = (u64, Vec<(Range<usize>, bool)>);
+/// An entry being read: its number, its marker, the words outside entries
+/// before it, and the byte range of each of its lines in the body with whether
+/// the line is fenced code.
+type Lines<'a> = (u64, &'a str, usize, Vec<(Range<usize>, bool)>);
+
+impl<'a> Body<'a> {
+    /// The words of the body in the order written, each entry's marker
+    /// included and its marks and legacy notes left out.
+    pub fn content(&self) -> Vec<&'a str> {
+        let mut words = Vec::new();
+        let mut from = 0;
+        for entry in &self.entries {
+            words.extend(&self.outside[from..entry.preceded]);
+            words.push(entry.marker);
+            words.extend(&entry.words);
+            from = entry.preceded;
+        }
+        words.extend(&self.outside[from..]);
+        words
+    }
+}
 
 pub fn parse(body: &str) -> Body<'_> {
     let mut entries: Vec<Lines> = Vec::new();
     let mut outside = Vec::new();
     // The column the content of the entry being read starts at.
     let mut item: Option<usize> = None;
-    let mut after_blank = true;
     let mut paragraph = false;
-    let mut fence: Option<(u8, usize)> = None;
+    // The index, among the lines of the entry being read, of the first line of
+    // a paragraph opened at the top level: a setext heading's text, if an
+    // underline follows.
+    let mut top: Option<usize> = None;
+    // The fence open: its character, its length and the column it opens at.
+    let mut fence: Option<(u8, usize, usize)> = None;
     let mut offset = 0;
     for raw in body.split_inclusive('\n') {
         let start = offset;
@@ -71,48 +99,66 @@ pub fn parse(body: &str) -> Body<'_> {
         let (indent, rest) = indentation(line, 0);
         let blank = line.trim().is_empty();
         let contained = item.is_some_and(|column| indent >= column);
-        // A fenced block inside an entry takes no lazy lines: the first line
-        // indented less than the entry's content ends both.
-        if fence.is_some() && item.is_some() && !blank && !contained {
-            fence = None;
-            item = None;
+        // A fence in an entry takes no lazy lines, so a line indented short of
+        // it, or of the entry's content, closes it and is read as written.
+        if let (Some((_, _, column)), Some(content)) = (fence, item) {
+            if !blank && indent < column.min(content) {
+                fence = None;
+            }
         }
         let mut fenced = fence.is_some();
-        if let Some(open) = fence {
-            if closes(line, open) {
+        if let Some((byte, length, _)) = fence {
+            if closes(line, (byte, length)) {
                 fence = None;
             }
         } else if blank {
-            after_blank = true;
             paragraph = false;
+            top = None;
         } else {
-            if !contained {
-                match marker(rest, indent) {
-                    // CommonMark lets only a list starting at 1 interrupt a
-                    // paragraph.
-                    Some((number, after, column))
-                        if item.is_some() || !paragraph || number == 1 =>
-                    {
-                        entries.push((number, Vec::new()));
-                        item = Some(column);
-                        text = after;
-                    }
-                    _ if item.is_some() && (after_blank || (indent <= 3 && interrupts(rest))) => {
-                        item = None;
-                        paragraph = false;
-                    }
-                    _ => {}
+            let mut numbered = false;
+            if let Some(at) = top.filter(|_| paragraph && indent <= 3 && underline(rest)) {
+                if let Some((_, _, _, lines)) = entries.last_mut() {
+                    let text = lines.drain(at..).map(|(range, _)| &body[range]);
+                    outside.extend(text.flat_map(str::split_whitespace));
+                }
+                item = None;
+            } else if !contained && indent <= 3 && (heading(rest) || thematic(rest)) {
+                item = None;
+            } else if !contained {
+                // CommonMark lets only a list starting at 1 interrupt a
+                // paragraph.
+                let opened = marker(rest, indent)
+                    .filter(|(number, _, _)| item.is_some() || !paragraph || *number == 1);
+                if let Some((number, after, column)) = opened {
+                    let written = &rest[..rest.len() - after.len()];
+                    entries.push((number, written, outside.len(), Vec::new()));
+                    item = Some(column);
+                    text = after;
+                    numbered = true;
                 }
             }
-            fence = opens(text);
+            let column = item.filter(|_| numbered).unwrap_or(indent);
+            fence = opens(text).map(|(byte, length)| (byte, length, column));
             fenced = fence.is_some();
+            let continues = paragraph;
             paragraph = !fenced
                 && !(indent <= 3
                     && (heading(rest) || thematic(rest) || (paragraph && underline(rest))));
-            after_blank = false;
+            top = match entries.last() {
+                Some((_, _, _, lines))
+                    if paragraph && item.is_some() && !numbered && !block(rest) =>
+                {
+                    if continues {
+                        top
+                    } else {
+                        (!contained && indent <= 3).then_some(lines.len())
+                    }
+                }
+                _ => None,
+            };
         }
         match entries.last_mut().filter(|_| item.is_some()) {
-            Some((_, lines)) => {
+            Some((_, _, _, lines)) => {
                 let from = start + line.len() - text.len();
                 lines.push((from..start + line.len(), fenced));
             }
@@ -122,7 +168,9 @@ pub fn parse(body: &str) -> Body<'_> {
     Body {
         entries: entries
             .into_iter()
-            .map(|(number, lines)| read_entry(body, number, &lines))
+            .map(|(number, marker, preceded, lines)| {
+                read_entry(body, (number, marker, preceded), &lines)
+            })
             .collect(),
         outside,
     }
@@ -165,14 +213,11 @@ fn marker(text: &str, indent: usize) -> Option<(u64, &str, usize)> {
     Some((text[..digits].parse().ok()?, rest, column))
 }
 
-/// Whether a line, its indentation removed, starts a block that ends an entry
-/// it is not indented into.
-fn interrupts(text: &str) -> bool {
-    heading(text)
-        || thematic(text)
-        || opens(text).is_some()
-        || text.starts_with('>')
-        || (text.starts_with(['-', '*', '+']) && text[1..].starts_with([' ', '\t']))
+/// Whether a line, its indentation removed, opens a bullet or a block quote.
+fn block(text: &str) -> bool {
+    text.starts_with('>')
+        || (text.starts_with(['-', '*', '+'])
+            && (text.len() == 1 || text[1..].starts_with([' ', '\t'])))
 }
 
 fn thematic(text: &str) -> bool {
@@ -215,7 +260,11 @@ fn closes(line: &str, (byte, length): (u8, usize)) -> bool {
 }
 
 /// An entry's words, marks and legacy notes, from its lines.
-fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) -> Entry<'a> {
+fn read_entry<'a>(
+    body: &'a str,
+    (number, marker, preceded): (u64, &'a str, usize),
+    lines: &[(Range<usize>, bool)],
+) -> Entry<'a> {
     // The byte ranges in `body` of each word, and of each code span and
     // fenced line.
     let mut words = Vec::new();
@@ -246,6 +295,8 @@ fn read_entry<'a>(body: &'a str, number: u64, lines: &[(Range<usize>, bool)]) ->
 
     let mut entry = Entry {
         number,
+        marker,
+        preceded,
         words: Vec::new(),
         supersedes: Vec::new(),
         superseded_by: Vec::new(),
@@ -446,18 +497,19 @@ mod tests {
     }
 
     #[test]
-    fn paragraphs_between_entries_are_outside_them() {
+    fn text_before_the_first_entry_or_after_a_heading_is_outside_entries() {
         let body = parse(
             "# Register\n\nIntro text.\n\n1. **First.** One.\n\nA note between\nentries.\n\n\
-             2. **Second.** Two.\n",
+             ## Later\n\nCoda.\n\n2. **Second.** Two.\n",
         );
         assert_eq!(numbers(&body), [1, 2]);
-        assert_eq!(body.entries[0].words, ["**First.**", "One."]);
+        assert_eq!(
+            body.entries[0].words,
+            ["**First.**", "One.", "A", "note", "between", "entries."]
+        );
         assert_eq!(
             body.outside,
-            [
-                "#", "Register", "Intro", "text.", "A", "note", "between", "entries."
-            ]
+            ["#", "Register", "Intro", "text.", "##", "Later", "Coda."]
         );
     }
 
@@ -630,31 +682,46 @@ mod tests {
     }
 
     #[test]
-    fn a_block_at_column_0_under_an_entry_line_ends_the_entry() {
-        for (block, outside) in [
+    fn a_bullet_quote_or_fence_at_column_0_under_an_entry_line_stays_inside_it() {
+        for (block, words, superseded_by) in [
             (
                 "- one file per kind",
                 vec!["-", "one", "file", "per", "kind"],
+                vec![],
             ),
-            (
-                "> **Superseded by:** 2.",
-                vec![">", "**Superseded", "by:**", "2."],
-            ),
+            ("\n> **Superseded by:** 2.", vec![">"], vec![2_u64]),
             (
                 "```\n**Superseded by:** 2.\n```",
                 vec!["```", "**Superseded", "by:**", "2.", "```"],
+                vec![],
             ),
-            ("***", vec!["***"]),
         ] {
             let text = format!("1. Use TOML for the registry:\n{block}\n");
             let body = parse(&text);
             let entry = &body.entries[0];
+            let mut expected = vec!["Use", "TOML", "for", "the", "registry:"];
+            expected.extend(words);
+            assert_eq!(entry.words, expected, "{block}");
+            assert_eq!(entry.superseded_by, superseded_by, "{block}");
+            assert!(body.outside.is_empty(), "{block}");
+        }
+    }
+
+    #[test]
+    fn a_heading_or_thematic_break_at_column_0_ends_the_entry() {
+        for (block, outside) in [
+            ("***", vec!["***"]),
+            ("- - -", vec!["-", "-", "-"]),
+            ("\n---\nCoda.", vec!["---", "Coda."]),
+            ("\n# Later", vec!["#", "Later"]),
+        ] {
+            let text = format!("1. Use TOML for the registry:\n{block}\n");
+            let body = parse(&text);
             assert_eq!(
-                entry.words,
+                body.entries[0].words,
                 ["Use", "TOML", "for", "the", "registry:"],
                 "{block}"
             );
-            assert!(entry.superseded_by.is_empty(), "{block}");
             assert_eq!(body.outside, outside, "{block}");
         }
     }
@@ -684,26 +751,77 @@ mod tests {
     }
 
     #[test]
-    fn a_line_indented_short_of_the_content_ends_the_entry_and_its_fence() {
-        let body = parse(
+    fn a_line_indented_short_of_a_fence_in_an_entry_closes_the_fence() {
+        for text in [
             "1. Use TOML. **Superseded by:** 2.\n   ```\n   x\n2. Use JSON. **Supersedes:** 1.\n",
-        );
-        assert_eq!(numbers(&body), [1, 2]);
+            "1. Use TOML. **Superseded by:** 2.\n\n   ```\n\n2. Use JSON. **Supersedes:** 1.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [1, 2], "{text}");
+            assert_eq!(body.entries[0].superseded_by, [2], "{text}");
+            assert_eq!(body.entries[1].supersedes, [1], "{text}");
+        }
+        let body = parse("1. Use TOML.\n   ```\n   x\n**Superseded by:** 2.\n");
         assert_eq!(body.entries[0].superseded_by, [2]);
-        assert_eq!(body.entries[1].supersedes, [1]);
+        assert!(body.outside.is_empty());
     }
 
     #[test]
-    fn a_paragraph_indented_short_of_the_content_after_a_blank_line_ends_the_entry() {
-        let body = parse("10. Ruling.\n\n   **Superseded by:** 12.\n");
-        assert!(body.entries[0].superseded_by.is_empty());
-        assert_eq!(body.outside, ["**Superseded", "by:**", "12."]);
-        let body = parse("10. Ruling.\n\n    **Superseded by:** 12.\n");
-        assert_eq!(body.entries[0].superseded_by, [12]);
+    fn a_top_level_setext_heading_ends_the_entry_before_its_text() {
+        for underline in ["=====", "-----"] {
+            let text = format!("1. Use TOML.\n\nNotes\n{underline}\n\nCoda.\n\n2. Use JSON.\n");
+            let body = parse(&text);
+            assert_eq!(numbers(&body), [1, 2], "{underline}");
+            assert_eq!(body.entries[0].words, ["Use", "TOML."], "{underline}");
+            assert_eq!(body.outside, ["Notes", underline, "Coda."], "{underline}");
+        }
     }
 
     #[test]
-    fn a_thematic_break_underline_or_closed_fence_outside_entries_is_not_a_paragraph() {
+    fn a_lazy_or_indented_line_is_no_setext_heading_text() {
+        for text in [
+            "1. Use TOML.\nNotes\n=====\n",
+            "1. Use TOML.\n\n   Notes\n=====\n",
+            "1. Use TOML.\n\n- Notes\n=====\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(body.entries[0].words.last(), Some(&"====="), "{text}");
+            assert!(body.outside.is_empty(), "{text}");
+        }
+        let body = parse("1. Use TOML.\nNotes\n-----\n");
+        assert_eq!(body.entries[0].words, ["Use", "TOML.", "Notes"]);
+        assert_eq!(body.outside, ["-----"]);
+    }
+
+    #[test]
+    fn content_runs_in_the_order_written_with_entry_numbers_and_without_marks() {
+        let body = parse(
+            "# Register\n\n1. **A.** Use TOML. **Superseded by:** 2.\n\n## Later\n\n\
+             2. **B.** Use JSON. SUPERSEDED by 3.\n",
+        );
+        assert_eq!(
+            body.content(),
+            [
+                "#", "Register", "1.", "**A.**", "Use", "TOML.", "##", "Later", "2.", "**B.**",
+                "Use", "JSON."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_paragraph_indented_short_of_the_content_after_a_blank_line_stays_inside_the_entry() {
+        for text in [
+            "10. Ruling.\n\n   **Superseded by:** 12.\n",
+            "10. Ruling.\n\n**Superseded by:** 12.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(body.entries[0].superseded_by, [12], "{text}");
+            assert!(body.outside.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_thematic_break_underline_or_closed_fence_is_not_a_paragraph() {
         for between in [
             "\n---\n",
             "Intro\n---\n",

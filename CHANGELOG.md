@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Under the supersession-marks proposal, `aw lint` reports a format change a
+  `reformatted` field declares, and counts text after an entry as its own (#80)
+
 ## [0.6.2] - 2026-10-29
 
 ### Fixed
