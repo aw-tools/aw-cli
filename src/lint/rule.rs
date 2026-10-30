@@ -82,6 +82,10 @@ rules! {
     StatusSkipped => ("status-skipped", Failure, Contract),
     StatusBackwards => ("status-backwards", Failure, Contract),
     BindingRewritten => ("binding-rewritten", Failure, Contract),
+    EntryRemoved => ("entry-removed", Failure, Contract),
+    EntryAdded => ("entry-added", Failure, Contract),
+    FormatChangeNarrow => ("format-change-narrow", Warning, Contract),
+    FormatChangeNoEntries => ("format-change-no-entries", Warning, Contract),
     ResidueMissing => ("residue-missing", Failure, Contract),
     EphemeralArchived => ("ephemeral-archived", Failure, Contract),
     CloseWithUnit => ("close-with-unit", Failure, Contract),
@@ -147,6 +151,10 @@ impl Rule {
             Rule::EntrySupersedesLater => &["3.9"],
             Rule::StatusSkipped | Rule::StatusBackwards => &["3.3"],
             Rule::BindingRewritten => &["3.6"],
+            Rule::EntryRemoved
+            | Rule::EntryAdded
+            | Rule::FormatChangeNarrow
+            | Rule::FormatChangeNoEntries => &["3.10"],
             Rule::ResidueMissing => &["4.1.2"],
             Rule::EphemeralArchived => &["4.1.4"],
             Rule::CloseWithUnit => &["4.2.2"],
@@ -193,6 +201,10 @@ impl Rule {
         match self {
             Rule::EntryMarkUnmatched
             | Rule::EntrySupersedesLater
+            | Rule::EntryRemoved
+            | Rule::EntryAdded
+            | Rule::FormatChangeNarrow
+            | Rule::FormatChangeNoEntries
             | Rule::EntrySupersedesSameDay => Some(Proposal::SupersessionMarks),
             _ => None,
         }

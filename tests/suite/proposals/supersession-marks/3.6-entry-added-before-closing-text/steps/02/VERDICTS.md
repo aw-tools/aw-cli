@@ -7,4 +7,6 @@ status: active
 2. Use git for version control.
 3. Use signed commits.
 
+---
+
 Verdicts are never edited.

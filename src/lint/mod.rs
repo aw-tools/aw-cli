@@ -108,7 +108,25 @@ pub fn run_all(root: &Path) -> Result<bool> {
 pub fn run_staged(root: &Path) -> Result<bool> {
     let proposals = check_declaration(Manifest::load(root)?.template.as_ref())?;
     let change = layout::read_staged(root)?;
-    let mut findings = commit::check(&change, &proposals);
+    let checked = commit::checked(&change, &proposals);
+    if let Some(format_change) = &checked.format_change {
+        eprintln!(
+            "{}",
+            reporting::lint_format_change(&format_change.paths, format_change.groups.len())
+        );
+        for group in &format_change.groups {
+            eprintln!(
+                "{}",
+                reporting::lint_format_group(
+                    &group.removed,
+                    &group.inserted,
+                    group.changes,
+                    &group.places
+                )
+            );
+        }
+    }
+    let mut findings = checked.findings;
     findings.extend(placement::check(&change.staged));
     findings.extend(style::check(&change.staged, style::today()));
     Ok(report(&gated(findings, &change.staged)))

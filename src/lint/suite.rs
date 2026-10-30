@@ -15,7 +15,7 @@
 use super::model::{Change, Head, Model, Unit};
 use super::proposal::Proposal;
 use super::registry::RegistryFile;
-use super::rule::Rule;
+use super::rule::{Rule, Severity};
 use super::tree::{self, Tree};
 use super::{Refusal, commit, layout, rules};
 use ignore::gitignore::GitignoreBuilder;
@@ -251,14 +251,17 @@ fn wrong_verdicts(dirs: &BTreeMap<String, PathBuf>, proposals: &[Proposal]) -> V
         let clause = fixture.file.clause.as_str();
         let verdict = verdict(&fixture, proposals);
         let correct = match (fixture.file.outcome.as_str(), &verdict) {
-            ("pass", Ok(findings)) => findings.is_empty(),
+            ("pass", Ok(findings)) => findings
+                .iter()
+                .all(|f| f.rule.severity() != Severity::Failure),
             ("fail", Err(_)) => clause == "1.1.1",
             // Clause 2.5 forbids reading meaning into a kind's name, so nothing
             // in a tree breaks it; its failing fixture holds a status the
             // registry's class for that kind does not allow.
-            ("fail", Ok(findings)) => findings
-                .iter()
-                .any(|f| clause == "2.5" || f.rule.clauses().contains(&clause)),
+            ("fail", Ok(findings)) => findings.iter().any(|f| {
+                f.rule.severity() == Severity::Failure
+                    && (clause == "2.5" || f.rule.clauses().contains(&clause))
+            }),
             _ => false,
         };
         if !correct {
@@ -299,8 +302,8 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 94, "the overlay holds 94 fixtures");
-    assert_eq!(with_steps(&dirs), 51, "51 of them hold commits");
+    assert_eq!(dirs.len(), 121, "the overlay holds 121 fixtures");
+    assert_eq!(with_steps(&dirs), 78, "78 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -343,6 +346,19 @@ fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
     assert_eq!(reached.len(), 11, "{reached:?}");
     for (name, rules) in reached {
         assert!(rules.is_empty(), "{name}: {rules:?}");
+    }
+}
+
+#[test]
+fn the_proposals_passing_3_10_fixtures_fail_revision_1s_3_6() {
+    let reached = rules_without_the_opt_in(|file| file.clause == "3.10" && file.outcome == "pass");
+    assert_eq!(reached.len(), 10, "{reached:?}");
+    for (name, rules) in reached {
+        assert!(!rules.is_empty(), "{name}");
+        assert!(
+            rules.iter().all(|rule| *rule == Rule::BindingRewritten),
+            "{name}: {rules:?}"
+        );
     }
 }
 
