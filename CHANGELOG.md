@@ -8,8 +8,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Under the supersession-marks proposal, `aw lint` reports a format change a
-  `reformatted` field declares, and counts text after an entry as its own (#80)
+- Under the supersession-marks proposal, `aw lint` accepts a format change to a
+  binding artefact when its `reformatted` field changes and every recorded entry
+  remains (#80)
+
+### Changed
+
+- Under the supersession-marks proposal, an entry runs to the next entry,
+  heading or `---` line, so `aw lint` protects the text below it (#80)
 
 ## [0.6.2] - 2026-10-29
 
