@@ -90,6 +90,9 @@ pub fn parse(body: &str) -> Body<'_> {
     let mut top: Option<usize> = None;
     // The fence open: its character, its length and the column it opens at.
     let mut fence: Option<(u8, usize, usize)> = None;
+    // The column the content of the bullet open outside any entry's content
+    // starts at.
+    let mut bullet: Option<usize> = None;
     let mut offset = 0;
     for raw in body.split_inclusive('\n') {
         let start = offset;
@@ -99,6 +102,7 @@ pub fn parse(body: &str) -> Body<'_> {
         let (indent, rest) = indentation(line, 0);
         let blank = line.trim().is_empty();
         let contained = item.is_some_and(|column| indent >= column);
+        let nested = bullet.is_some_and(|column| indent >= column);
         // A fence in an entry takes no lazy lines, so a line indented short of
         // it, or of the entry's content, closes it and is read as written.
         if let (Some((_, _, column)), Some(content)) = (fence, item) {
@@ -124,7 +128,7 @@ pub fn parse(body: &str) -> Body<'_> {
                 item = None;
             } else if !contained && indent <= 3 && (heading(rest) || thematic(rest)) {
                 item = None;
-            } else if !contained {
+            } else if !contained && !nested {
                 // CommonMark lets only a list starting at 1 interrupt a
                 // paragraph.
                 let opened = marker(rest, indent)
@@ -156,6 +160,15 @@ pub fn parse(body: &str) -> Body<'_> {
                 }
                 _ => None,
             };
+            if !nested {
+                // A lazy line continues the bullet's paragraph, so the bullet
+                // stays open.
+                bullet = match bullet_column(rest, indent) {
+                    Some(column) if paragraph && !contained => Some(column),
+                    _ if continues && paragraph && !numbered && !block(rest) => bullet,
+                    _ => None,
+                };
+            }
         }
         match entries.last_mut().filter(|_| item.is_some()) {
             Some((_, _, _, lines)) => {
@@ -211,6 +224,22 @@ fn marker(text: &str, indent: usize) -> Option<(u64, &str, usize)> {
         column
     };
     Some((text[..digits].parse().ok()?, rest, column))
+}
+
+/// The column a bullet's content starts at, for a line whose indentation
+/// `indent` is removed from `text`.
+fn bullet_column(text: &str, indent: usize) -> Option<usize> {
+    let rest = text.strip_prefix(['-', '*', '+'])?;
+    if indent > 3 || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+        return None;
+    }
+    let width = indent + 1;
+    let (column, content) = indentation(rest, width);
+    Some(if content.is_empty() || column - width > 4 {
+        width + 1
+    } else {
+        column
+    })
 }
 
 /// Whether a line, its indentation removed, opens a bullet or a block quote.
@@ -967,5 +996,48 @@ mod tests {
     fn words_split_on_unicode_white_space() {
         let body = parse("1. Use\u{a0}TOML\u{2003}now.\n");
         assert_eq!(body.entries[0].words, ["Use", "TOML", "now."]);
+    }
+
+    #[test]
+    fn a_numbered_list_nested_in_a_bullet_is_no_entry() {
+        for text in [
+            "- **Decided:** Do it:\n  1. One.\n  2. Two.\n",
+            "### 121. Title\n\n- **Decided:** Do it:\n  1. One.\n  2. Two.\n",
+            " - Do it:\n   1. One.\n   2. Two.\n",
+            "  * Do it:\n    1. One.\n    2. Two.\n",
+            "   + Do it:\n     1. One.\n     2. Two.\n",
+            "-   Do it:\n    1. One.\n    2. Two.\n",
+            "- Do it\nlazily:\n  1. One.\n  2. Two.\n",
+            "- Do it:\n\n  1. One.\n\n  2. Two.\n",
+            "- Do it:\n  - this way:\n    1. One.\n  2. Two.\n",
+        ] {
+            let body = parse(text);
+            assert!(body.entries.is_empty(), "{text}");
+            assert_eq!(body.outside.last(), Some(&"Two."), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_numbered_list_nested_in_a_bullet_inside_an_entry_is_the_entry_s() {
+        for text in [
+            "1. Ruling:\n- Do it:\n  1. One.\n  2. Two.\n3. Next.\n",
+            "1. Ruling.\n\n- Do it:\n\n  2. Two.\n3. Next.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [1, 3], "{text}");
+            assert_eq!(body.entries[0].words.last(), Some(&"Two."), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_numbered_list_at_column_0_after_a_bullet_and_a_blank_line_is_entries() {
+        for text in [
+            "- Do it.\n\n1. One.\n2. Two.\n",
+            "- Do it:\n  1. Nested.\n\n1. One.\n2. Two.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [1, 2], "{text}");
+            assert_eq!(body.entries[1].words, ["Two."], "{text}");
+        }
     }
 }
