@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `aw lint` reads a binding artefact's `## 1.` headings as its entries, so a
+  heading-form register converts to a list without losing them (#82)
+
 ## [0.7.0] - 2026-10-30
 
 ### Added

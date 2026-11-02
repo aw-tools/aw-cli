@@ -1,17 +1,23 @@
 //! Entries and supersession marks in a binding artefact's body, in the form
 //! the `supersession-marks` proposal's fixtures fix.
 //!
-//! An entry is an item of a numbered list at the top level of the body,
-//! identified by the number written before it. It runs to the next such item,
-//! top-level heading or top-level thematic break, or the end of the body, so
-//! whatever lies between, nested lists and unindented paragraphs included, is
-//! its own. A mark is `**Supersedes:**` or `**Superseded by:**`, then entry
-//! numbers separated by commas and ending in a full stop. A legacy note is
-//! `SUPERSEDED by`, then entry numbers separated by commas and any full stop
-//! directly after the last. Both are read word by word so any white space may
-//! wrap them, and either may begin or end inside a word, what is left of that
-//! word staying a word. Code spans and fenced blocks hide marks and notes;
-//! their words stay.
+//! An entry is either an item of a numbered list at the top level of the body
+//! or a level-two ATX heading at the top level, with no closing sequence of
+//! `#`, whose text opens with a number, a full stop and white space; each is
+//! identified by the number written before it. A list entry runs to the next
+//! such item, top-level heading or top-level thematic break, or the end of the
+//! body, so whatever lies between, nested lists and unindented paragraphs
+//! included, is its own. A heading entry holds its heading's words after the
+//! number and runs to the next heading entry, top-level heading of level one or
+//! two, or top-level thematic break, or the end of the body; numbered lists and
+//! deeper headings inside it are its own. Where a body holds a heading entry,
+//! none of its numbered list items is an entry. A mark is `**Supersedes:**` or
+//! `**Superseded by:**`, then entry numbers separated by commas and ending in a
+//! full stop. A legacy note is `SUPERSEDED by`, then entry numbers separated by
+//! commas and any full stop directly after the last. Both are read word by word
+//! so any white space may wrap them, and either may begin or end inside a word,
+//! what is left of that word staying a word. Code spans and fenced blocks hide
+//! marks and notes; their words stay.
 
 use std::ops::Range;
 
@@ -79,19 +85,46 @@ impl<'a> Body<'a> {
 }
 
 pub fn parse(body: &str) -> Body<'_> {
+    let (mut entries, mut outside, met) = read(body, false);
+    if met {
+        (entries, outside, _) = read(body, true);
+    }
+    Body {
+        entries: entries
+            .into_iter()
+            .map(|(number, marker, preceded, lines)| {
+                read_entry(body, (number, marker, preceded), &lines, met)
+            })
+            .collect(),
+        outside,
+    }
+}
+
+/// The body's entries and the words outside them, with its numbered list items
+/// as entries, or its headings when `headings`, and whether a heading entry's
+/// line was met at the top level. Both readings track the same top-level
+/// containers, so a line is at the top level in one exactly when it is in the
+/// other.
+fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
     let mut entries: Vec<Lines> = Vec::new();
     let mut outside = Vec::new();
-    // The column the content of the entry being read starts at.
+    // The column the content of the top-level numbered list item being read
+    // starts at.
     let mut item: Option<usize> = None;
+    // Whether a heading entry is being read.
+    let mut headed = false;
+    let mut met = false;
+    // Whether the lines read go to the last entry.
+    let open = |item: Option<usize>, headed: bool| if headings { headed } else { item.is_some() };
     let mut paragraph = false;
-    // The index, among the lines of the entry being read, of the first line of
-    // a paragraph opened at the top level: a setext heading's text, if an
-    // underline follows.
+    // While a list item or an entry is being read, the index, among the lines
+    // of the last entry, of the first line of a paragraph opened at the top
+    // level: a setext heading's text, if an underline follows.
     let mut top: Option<usize> = None;
     // The fence open: its character, its length and the column it opens at.
     let mut fence: Option<(u8, usize, usize)> = None;
-    // The column the content of the bullet open outside any entry's content
-    // starts at.
+    // The column the content of the bullet open outside any list item's
+    // content starts at.
     let mut bullet: Option<usize> = None;
     let mut offset = 0;
     for raw in body.split_inclusive('\n') {
@@ -99,12 +132,14 @@ pub fn parse(body: &str) -> Body<'_> {
         offset += raw.len();
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let mut text = line;
+        // The text a fence could open: a list item's content on its first line.
+        let mut inner = line;
         let (indent, rest) = indentation(line, 0);
         let blank = line.trim().is_empty();
         let contained = item.is_some_and(|column| indent >= column);
         let nested = bullet.is_some_and(|column| indent >= column);
-        // A fence in an entry takes no lazy lines, so a line indented short of
-        // it, or of the entry's content, closes it and is read as written.
+        // A fence in a list item takes no lazy lines, so a line indented short
+        // of it, or of the item's content, closes it and is read as written.
         if let (Some((_, _, column)), Some(content)) = (fence, item) {
             if !blank && indent < column.min(content) {
                 fence = None;
@@ -121,44 +156,54 @@ pub fn parse(body: &str) -> Body<'_> {
         } else {
             let mut numbered = false;
             if let Some(at) = top.filter(|_| paragraph && indent <= 3 && underline(rest)) {
-                if let Some((_, _, _, lines)) = entries.last_mut() {
+                if let Some((_, _, _, lines)) = entries.last_mut().filter(|_| open(item, headed)) {
                     let text = lines.drain(at..).map(|(range, _)| &body[range]);
                     outside.extend(text.flat_map(str::split_whitespace));
                 }
                 item = None;
+                headed = false;
             } else if !contained && indent <= 3 && (heading(rest) || thematic(rest)) {
                 item = None;
+                // A deeper heading inside a heading entry is its own.
+                if !nested && level(rest) <= 2 {
+                    headed = false;
+                }
+                if let Some((number, written, after)) = heading_entry(rest).filter(|_| !nested) {
+                    met = true;
+                    if headings {
+                        entries.push((number, written, outside.len(), Vec::new()));
+                        headed = true;
+                        text = after;
+                    }
+                }
             } else if !contained && !nested {
                 // CommonMark lets only a list starting at 1 interrupt a
                 // paragraph.
                 let opened = marker(rest, indent)
                     .filter(|(number, _, _)| item.is_some() || !paragraph || *number == 1);
                 if let Some((number, after, column)) = opened {
-                    let written = &rest[..rest.len() - after.len()];
-                    entries.push((number, written, outside.len(), Vec::new()));
+                    if !headings {
+                        let written = &rest[..rest.len() - after.len()];
+                        entries.push((number, written, outside.len(), Vec::new()));
+                        text = after;
+                    }
                     item = Some(column);
-                    text = after;
+                    inner = after;
                     numbered = true;
                 }
             }
             let column = item.filter(|_| numbered).unwrap_or(indent);
-            fence = opens(text).map(|(byte, length)| (byte, length, column));
+            fence = opens(inner).map(|(byte, length)| (byte, length, column));
             fenced = fence.is_some();
             let continues = paragraph;
             paragraph = !fenced
                 && !(indent <= 3
                     && (heading(rest) || thematic(rest) || (paragraph && underline(rest))));
-            top = match entries.last() {
-                Some((_, _, _, lines))
-                    if paragraph && item.is_some() && !numbered && !block(rest) =>
-                {
-                    if continues {
-                        top
-                    } else {
-                        (!contained && indent <= 3).then_some(lines.len())
-                    }
-                }
-                _ => None,
+            let lines = entries.last().map_or(0, |(_, _, _, lines)| lines.len());
+            top = match paragraph && (item.is_some() || headed) && !numbered && !block(rest) {
+                true if continues => top,
+                true => (!contained && indent <= 3).then_some(lines),
+                false => None,
             };
             if !nested {
                 // A lazy line continues the bullet's paragraph, so the bullet
@@ -170,7 +215,7 @@ pub fn parse(body: &str) -> Body<'_> {
                 };
             }
         }
-        match entries.last_mut().filter(|_| item.is_some()) {
+        match entries.last_mut().filter(|_| open(item, headed)) {
             Some((_, _, _, lines)) => {
                 let from = start + line.len() - text.len();
                 lines.push((from..start + line.len(), fenced));
@@ -178,15 +223,7 @@ pub fn parse(body: &str) -> Body<'_> {
             None => outside.extend(text.split_whitespace()),
         }
     }
-    Body {
-        entries: entries
-            .into_iter()
-            .map(|(number, marker, preceded, lines)| {
-                read_entry(body, (number, marker, preceded), &lines)
-            })
-            .collect(),
-        outside,
-    }
+    (entries, outside, met)
 }
 
 /// The column the white space opening `text` reaches from column `from`, tabs
@@ -266,9 +303,43 @@ fn underline(text: &str) -> bool {
 }
 
 fn heading(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
+    let hashes = level(line);
     let rest = &line[hashes..];
     (1..=6).contains(&hashes) && (rest.is_empty() || rest.starts_with([' ', '\t']))
+}
+
+/// How many `#` open a line, its indentation removed.
+fn level(text: &str) -> usize {
+    text.bytes().take_while(|byte| *byte == b'#').count()
+}
+
+/// A heading entry's number, the number as written with its full stop, and the
+/// text after it, for a line whose indentation is removed: a level-two ATX
+/// heading with no closing sequence of `#` whose text, trailing spaces, tabs
+/// and carriage return stripped, opens with a number, a full stop and white
+/// space.
+fn heading_entry(text: &str) -> Option<(u64, &str, &str)> {
+    let rest = text.strip_prefix("##")?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let content = rest.trim_start_matches([' ', '\t']);
+    let trimmed = content.trim_end_matches([' ', '\t', '\r']);
+    let closing = trimmed
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b'#')
+        .count();
+    if closing > 0 && trimmed[..trimmed.len() - closing].ends_with([' ', '\t']) {
+        return None;
+    }
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    let after = trimmed[digits..].strip_prefix('.')?;
+    if digits == 0 || !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let number = trimmed[..digits].parse().ok()?;
+    Some((number, &trimmed[..=digits], &content[digits + 1..]))
 }
 
 /// The fence a line opens: its character and length.
@@ -288,18 +359,20 @@ fn closes(line: &str, (byte, length): (u8, usize)) -> bool {
     run >= length && line[run..].trim().is_empty()
 }
 
-/// An entry's words, marks and legacy notes, from its lines.
+/// An entry's words, marks and legacy notes, from its lines, the first of
+/// which is its heading when `heading`.
 fn read_entry<'a>(
     body: &'a str,
     (number, marker, preceded): (u64, &'a str, usize),
     lines: &[(Range<usize>, bool)],
+    heading: bool,
 ) -> Entry<'a> {
     // The byte ranges in `body` of each word, and of each code span and
     // fenced line.
     let mut words = Vec::new();
     let mut code = Vec::new();
     let mut paragraph: Option<Range<usize>> = None;
-    for (range, fenced) in lines {
+    for (index, (range, fenced)) in lines.iter().enumerate() {
         words.extend(split(body, range.clone()));
         if *fenced || body[range.clone()].trim().is_empty() {
             code.extend(
@@ -313,6 +386,16 @@ fn read_entry<'a>(
             }
         } else {
             paragraph = Some(paragraph.map_or(range.clone(), |open| open.start..range.end));
+        }
+        // An ATX heading is a block of its own, so its code spans close with
+        // it rather than pairing into the paragraph below.
+        if heading && index == 0 {
+            code.extend(
+                paragraph
+                    .take()
+                    .into_iter()
+                    .flat_map(|open| spans(body, open)),
+            );
         }
     }
     code.extend(paragraph.into_iter().flat_map(|open| spans(body, open)));
@@ -1039,5 +1122,248 @@ mod tests {
             assert_eq!(numbers(&body), [1, 2], "{text}");
             assert_eq!(body.entries[1].words, ["Two."], "{text}");
         }
+    }
+
+    #[test]
+    fn a_level_two_heading_opening_with_a_number_is_an_entry() {
+        let body = parse(
+            "# Register\n\nIntro.\n\n## 1. Registry format\n\nUse TOML. **Rejected:** JSON.\n\n\
+             ## 2. Version control\n\nUse git.\n",
+        );
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(body.entries[0].marker, "1.");
+        assert_eq!(body.entries[0].preceded, 3);
+        assert_eq!(
+            body.entries[0].words,
+            [
+                "Registry",
+                "format",
+                "Use",
+                "TOML.",
+                "**Rejected:**",
+                "JSON."
+            ]
+        );
+        assert_eq!(body.entries[1].words, ["Version", "control", "Use", "git."]);
+        assert_eq!(body.outside, ["#", "Register", "Intro."]);
+    }
+
+    #[test]
+    fn a_numbered_list_at_the_margin_of_a_heading_entry_is_the_entry_s() {
+        let body = parse(
+            "## 1. Registry format\n\nUse TOML.\n\n## 2. Version control\n\nThree reasons:\n\n\
+             1. Every host offers it.\n2. Every tool reads it.\n3. Signed commits come free.\n\n\
+             Set aside: Mercurial.\n",
+        );
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(
+            body.entries[1].words,
+            [
+                "Version",
+                "control",
+                "Three",
+                "reasons:",
+                "1.",
+                "Every",
+                "host",
+                "offers",
+                "it.",
+                "2.",
+                "Every",
+                "tool",
+                "reads",
+                "it.",
+                "3.",
+                "Signed",
+                "commits",
+                "come",
+                "free.",
+                "Set",
+                "aside:",
+                "Mercurial."
+            ]
+        );
+        assert!(body.outside.is_empty());
+    }
+
+    #[test]
+    fn where_a_heading_entry_exists_no_numbered_list_item_is_an_entry() {
+        let body = parse("1. One.\n2. Two.\n\n## 3. Three\n\nText.\n");
+        assert_eq!(numbers(&body), [3]);
+        assert_eq!(body.entries[0].words, ["Three", "Text."]);
+        assert_eq!(body.outside, ["1.", "One.", "2.", "Two."]);
+        let body = parse("## 3. Three\n\nText.\n\n## Later\n\n4. Four.\n");
+        assert_eq!(numbers(&body), [3]);
+        assert_eq!(body.outside, ["##", "Later", "4.", "Four."]);
+    }
+
+    #[test]
+    fn a_heading_entry_ends_at_a_top_level_heading_of_level_one_or_two_or_a_thematic_break() {
+        for (block, outside) in [
+            ("## Later", vec!["##", "Later"]),
+            ("# Later", vec!["#", "Later"]),
+            ("## 2. Later ##", vec!["##", "2.", "Later", "##"]),
+            ("## 2. Later #", vec!["##", "2.", "Later", "#"]),
+            ("---", vec!["---"]),
+            ("***", vec!["***"]),
+            ("- - -", vec!["-", "-", "-"]),
+        ] {
+            let text = format!("## 1. Use TOML\n\nText.\n\n{block}\n\nCoda.\n");
+            let body = parse(&text);
+            assert_eq!(numbers(&body), [1], "{block}");
+            assert_eq!(body.entries[0].words, ["Use", "TOML", "Text."], "{block}");
+            let mut expected = outside;
+            expected.push("Coda.");
+            assert_eq!(body.outside, expected, "{block}");
+        }
+    }
+
+    #[test]
+    fn a_deeper_heading_inside_a_heading_entry_is_part_of_it() {
+        for level in ["###", "####", "#####", "######"] {
+            let text = format!("## 1. Use TOML\n\n{level} 2. Reasons\n\nText.\n\n## 2. Next\n");
+            let body = parse(&text);
+            assert_eq!(numbers(&body), [1, 2], "{level}");
+            assert_eq!(
+                body.entries[0].words,
+                ["Use", "TOML", level, "2.", "Reasons", "Text."],
+                "{level}"
+            );
+            assert!(body.outside.is_empty(), "{level}");
+        }
+    }
+
+    #[test]
+    fn a_heading_entry_s_number_is_the_one_written() {
+        let body = parse("## 7. Seven\n\n## 3. Three\n\n## 7. Seven again\n");
+        assert_eq!(numbers(&body), [7, 3, 7]);
+        assert_eq!(body.entries[2].words, ["Seven", "again"]);
+    }
+
+    #[test]
+    fn a_heading_whose_number_carries_a_suffix_is_no_entry() {
+        let body = parse("## 1. One\n\nText.\n\n## 2a. Corrected\n\nMore.\n\n## 3. Three\n");
+        assert_eq!(numbers(&body), [1, 3]);
+        assert_eq!(body.entries[0].words, ["One", "Text."]);
+        assert_eq!(body.outside, ["##", "2a.", "Corrected", "More."]);
+    }
+
+    #[test]
+    fn a_heading_entry_follows_the_atx_heading_rules() {
+        for text in [
+            "## 3. Title\n",
+            "##  3.  Title\n",
+            "##\t3.\tTitle\n",
+            " ## 3. Title\n",
+            "   ## 3. Title\n",
+            "## 3. Title \n",
+            "## 3. Title#\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [3], "{text:?}");
+            assert_eq!(body.entries[0].marker, "3.", "{text:?}");
+            assert!(body.entries[0].words[0].starts_with("Title"), "{text:?}");
+            assert!(body.outside.is_empty(), "{text:?}");
+        }
+        for text in [
+            "    ## 3. Title\n",
+            "##3. Title\n",
+            "## 3.\n",
+            "## 3. \n",
+            "## 3.Title\n",
+            "## 3 Title\n",
+            "### 3. Title\n",
+            "# 3. Title\n",
+            "## 3. Title ##\n",
+        ] {
+            assert!(parse(text).entries.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_heading_entry_line_ending_in_a_carriage_return_is_trimmed_like_a_space() {
+        let body = parse("## 3. Title\r\n\r\nText.\r\n");
+        assert_eq!(numbers(&body), [3]);
+        assert_eq!(body.entries[0].words, ["Title", "Text."]);
+        assert!(parse("## 3.\r\n").entries.is_empty());
+        assert!(parse("## 3. \r\n").entries.is_empty());
+    }
+
+    #[test]
+    fn a_numbered_heading_opening_a_bullet_or_a_block_quote_is_no_entry() {
+        for text in ["- ## 3. Title\n", "> ## 3. Title\n"] {
+            assert!(parse(text).entries.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_backtick_on_a_heading_entry_line_opens_no_code_span_into_the_paragraph_below() {
+        let body = parse("## 1. A `\nText **Supersedes:** 0. `\n");
+        assert_eq!(body.entries[0].supersedes, [0]);
+        assert_eq!(body.entries[0].words, ["A", "`", "Text", "`"]);
+        let body = parse("1. A `\n   Text **Supersedes:** 0. `\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn a_numbered_heading_inside_a_fence_or_a_list_item_opens_no_entry() {
+        let body = parse("## 1. One\n\n```\n## 2. Two\n```\n");
+        assert_eq!(numbers(&body), [1]);
+        assert_eq!(
+            body.entries[0].words,
+            ["One", "```", "##", "2.", "Two", "```"]
+        );
+        let body = parse("1. One.\n\n   ## 2. Two\n");
+        assert_eq!(numbers(&body), [1]);
+        assert_eq!(body.entries[0].words, ["One.", "##", "2.", "Two"]);
+    }
+
+    #[test]
+    fn marks_in_heading_entries_name_their_entries() {
+        let body = parse(
+            "## 1. Registry format\n\nUse TOML. **Superseded by:** 3.\n\n\
+             ## 2. Registry layout\n\nOne file. SUPERSEDED by 3.\n\n\
+             ## 3. Registry format and layout\n\nOne JSON file per kind. **Supersedes:** 1, 2.\n",
+        );
+        assert_eq!(numbers(&body), [1, 2, 3]);
+        assert_eq!(body.entries[0].superseded_by, [3]);
+        assert_eq!(body.entries[1].noted, [3]);
+        assert_eq!(body.entries[2].supersedes, [1, 2]);
+        assert_eq!(
+            body.entries[2].words,
+            [
+                "Registry", "format", "and", "layout", "One", "JSON", "file", "per", "kind."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_top_level_setext_heading_ends_a_heading_entry_before_its_text() {
+        for underline in ["=====", "-----"] {
+            let text = format!("## 1. Use TOML\n\nText.\n\nNotes\n{underline}\n\nCoda.\n");
+            let body = parse(&text);
+            assert_eq!(numbers(&body), [1], "{underline}");
+            assert_eq!(
+                body.entries[0].words,
+                ["Use", "TOML", "Text."],
+                "{underline}"
+            );
+            assert_eq!(body.outside, ["Notes", underline, "Coda."], "{underline}");
+        }
+    }
+
+    #[test]
+    fn content_of_heading_entries_carries_their_numbers_without_the_hashes() {
+        let body = parse(
+            "# Register\n\n## 1. A\n\nUse TOML. **Superseded by:** 2.\n\n## Later\n\n\
+             ## 2. B\n\nUse JSON.\n",
+        );
+        assert_eq!(
+            body.content(),
+            [
+                "#", "Register", "1.", "A", "Use", "TOML.", "##", "Later", "2.", "B", "Use",
+                "JSON."
+            ]
+        );
     }
 }

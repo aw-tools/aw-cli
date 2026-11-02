@@ -302,8 +302,8 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 121, "the overlay holds 121 fixtures");
-    assert_eq!(with_steps(&dirs), 78, "78 of them hold commits");
+    assert_eq!(dirs.len(), 131, "the overlay holds 131 fixtures");
+    assert_eq!(with_steps(&dirs), 86, "86 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -327,11 +327,15 @@ fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(Strin
 }
 
 #[test]
-fn the_proposals_passing_3_6_fixtures_but_a_first_entry_fail_revision_1s_3_6() {
+fn the_proposals_passing_3_6_fixtures_but_pure_appends_fail_revision_1s_3_6() {
     let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
-    assert_eq!(reached.len(), 19, "{reached:?}");
+    assert_eq!(reached.len(), 20, "{reached:?}");
     for (name, rules) in reached {
-        let expected: &[Rule] = if name == "3.6-first-entry-added" {
+        let appends = [
+            "3.6-first-entry-added",
+            "3.6-heading-entry-added-after-margin-list",
+        ];
+        let expected: &[Rule] = if appends.contains(&name.as_str()) {
             &[]
         } else {
             &[Rule::BindingRewritten]
@@ -343,7 +347,7 @@ fn the_proposals_passing_3_6_fixtures_but_a_first_entry_fail_revision_1s_3_6() {
 #[test]
 fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
     let reached = rules_without_the_opt_in(|file| file.clause == "3.8" || file.clause == "3.9");
-    assert_eq!(reached.len(), 11, "{reached:?}");
+    assert_eq!(reached.len(), 13, "{reached:?}");
     for (name, rules) in reached {
         assert!(rules.is_empty(), "{name}: {rules:?}");
     }
@@ -352,7 +356,7 @@ fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
 #[test]
 fn the_proposals_passing_3_10_fixtures_fail_revision_1s_3_6() {
     let reached = rules_without_the_opt_in(|file| file.clause == "3.10" && file.outcome == "pass");
-    assert_eq!(reached.len(), 10, "{reached:?}");
+    assert_eq!(reached.len(), 12, "{reached:?}");
     for (name, rules) in reached {
         assert!(!rules.is_empty(), "{name}");
         assert!(

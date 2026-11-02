@@ -1548,7 +1548,7 @@ class = \"binding\"
         );
         let checked = commit(
             &[LABELLED],
-            &["reformatted: x\n---\n## 1. A\n\n## 2. B\n\n## 3. C\n"],
+            &["reformatted: x\n---\n### 1. A\n\n### 2. B\n\n### 3. C\n"],
             MARKS,
         );
         assert_eq!(rules_of(&checked), [("notes/0.md", Rule::EntryRemoved); 3]);
@@ -1571,7 +1571,7 @@ class = \"binding\"
     #[test]
     fn a_format_change_where_no_entry_is_recorded_compares_the_whole_body_and_warns() {
         let checked = commit(
-            &["---\n## 1. A\n\nUse TOML.\n"],
+            &["---\n### 1. A\n\nUse TOML.\n"],
             &["reformatted: x\n---\n1. **A.** Use TOML.\n"],
             MARKS,
         );
@@ -1588,7 +1588,7 @@ class = \"binding\"
             groups,
             [
                 Group {
-                    removed: words(&["##"]),
+                    removed: words(&["###"]),
                     inserted: Vec::new(),
                     changes: 1,
                     places: vec![("notes/0.md".to_owned(), Vec::new())],
@@ -1688,7 +1688,7 @@ class = \"binding\"
     #[test]
     fn a_format_change_where_no_entry_is_recorded_reports_no_mark() {
         let checked = commit(
-            &["---\n## 1. A\n\nUse TOML.\n\n## 2. B\n\nUse JSON.\n"],
+            &["---\n### 1. A\n\nUse TOML.\n\n### 2. B\n\nUse JSON.\n"],
             &[
                 "reformatted: x\n---\n1. **A.** Use TOML. **Superseded by:** 2.\n\
                2. **B.** Use JSON. **Supersedes:** 1.\n",
@@ -1704,7 +1704,7 @@ class = \"binding\"
             checked.format_change.unwrap().groups,
             [
                 Group {
-                    removed: words(&["##"]),
+                    removed: words(&["###"]),
                     inserted: Vec::new(),
                     changes: 2,
                     places: place(),
