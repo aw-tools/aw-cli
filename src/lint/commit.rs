@@ -33,8 +33,8 @@ pub struct FormatChange {
     pub groups: Vec<Group>,
 }
 
-/// Every change of words in the commit that removes the same words and
-/// inserts the same words.
+/// Every change of words in the commit that replaces the same old words with
+/// the same new words.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Group {
     pub removed: Vec<String>,
@@ -191,8 +191,10 @@ fn check_transitions(
 /// Clause 3.6 as the `supersession-marks` proposal words it, over the body
 /// content clauses 3.8 and 3.9 leave: how a binding artefact's body changes
 /// what `before` recorded, if it does. Each recorded entry must be read again
-/// under its number, keeping its words and, as clause 3.10 requires, every
-/// entry its two sets name; new entries must be numbered above the highest of
+/// under its number, keeping its words and, as clause 3.10 requires, a
+/// supersedes mark naming each entry its supersedes marks named, and a
+/// superseded-by mark or legacy note naming each entry its superseded-by marks
+/// or legacy notes named; new entries must be numbered above the highest of
 /// them; and, where `before` holds no entry, the words outside entries must
 /// begin with the recorded ones. In an artefact whose format change the commit
 /// declares, no words are compared, as clause 3.14 requires, and a recorded

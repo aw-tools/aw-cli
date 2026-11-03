@@ -39,9 +39,9 @@ pub struct Entry<'a> {
     pub supersedes: Vec<u64>,
     /// The entries its superseded-by marks name.
     pub superseded_by: Vec<u64>,
-    /// The entries its legacy notes name. Only clause 3.10 reads them, into
-    /// the entry's superseded-by set: a note is not a superseded-by mark, so
-    /// clauses 3.11 and 3.12 never see it.
+    /// The entries its legacy notes name. Only clause 3.10 reads them, which
+    /// lets a superseded-by mark or a legacy note keep an entry named: a note
+    /// is not a superseded-by mark, so clauses 3.11 and 3.12 never see it.
     pub noted: Vec<u64>,
     /// The date its title carries.
     pub date: Option<String>,
