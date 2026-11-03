@@ -16,6 +16,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   continuing a top-level paragraph opens no entry, one directly under a bullet
   or block quote opens one, and an unindented line after indented code in the
   item closes the item (#82)
+- `aw lint` no longer reads a supersession mark or legacy note inside an
+  indented code block (#82)
 
 ## [0.7.0] - 2026-10-30
 

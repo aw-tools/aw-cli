@@ -14,8 +14,8 @@
 //! entry numbers separated by commas and any full stop directly after the last.
 //! Any run of white space, line breaks included, may separate the words of a
 //! mark or a legacy note, and either may begin or end inside a word, what is
-//! left of that word staying a word. Code spans and fenced blocks hide marks
-//! and notes; their words stay.
+//! left of that word staying a word. Code spans and code blocks, fenced or
+//! indented, hide marks and notes; their words stay.
 
 use std::ops::Range;
 
@@ -63,7 +63,7 @@ const LABELS: [(Label, &[&str]); 3] = [
 
 /// An entry being read: its number, its marker, the words outside entries
 /// before it, and the byte range of each of its lines in the body with whether
-/// the line is fenced code.
+/// the line is in a fenced or indented code block.
 type Lines<'a> = (u64, &'a str, usize, Vec<(Range<usize>, bool)>);
 
 impl<'a> Body<'a> {
@@ -145,7 +145,7 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
         let base = flow.base(indent, outer);
         let lazy = flow.paragraph && !interrupts(rest, indent, base);
         inside &= item.is_some_and(|column| blank || indent >= column || lazy);
-        let mut fenced = fence.is_some();
+        let mut in_block = fence.is_some();
         if let Some((byte, length, _)) = fence {
             if closes(line, (byte, length)) {
                 fence = None;
@@ -207,12 +207,12 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
                 (inner, origin, host),
                 lines,
             );
-            fenced = fence.is_some();
+            in_block = fence.is_some() || flow.code;
         }
         match entries.last_mut().filter(|_| open(item, headed)) {
             Some((_, _, _, lines)) => {
                 let from = start + line.len() - text.len();
-                lines.push((from..start + line.len(), fenced));
+                lines.push((from..start + line.len(), in_block));
             }
             None => outside.extend(text.split_whitespace()),
         }
@@ -225,6 +225,8 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
 struct Flow {
     /// Whether a paragraph is open.
     paragraph: bool,
+    /// Whether the last line `step` read is in an indented code block.
+    code: bool,
     /// Whether the open paragraph is a direct child of the document: opened
     /// at an indent of at most three outside any item, bullet or block quote,
     /// however it has been continued since.
@@ -236,6 +238,8 @@ struct Flow {
     /// The column the content of the bullet open outside any list item's
     /// content starts at.
     bullet: Option<usize>,
+    /// The column of that bullet while it is empty so far.
+    empty: Option<usize>,
     /// The columns the content of the list items open inside the top-level
     /// item or bullet starts at, innermost last.
     nest: Vec<usize>,
@@ -244,6 +248,10 @@ struct Flow {
 impl Flow {
     /// A blank line ends the paragraph; the bullet stays open.
     fn blank(&mut self) {
+        // An item opening with a blank line ends at the next one.
+        if self.empty.take().is_some() {
+            self.bullet = None;
+        }
         self.paragraph = false;
         self.prose = false;
         self.top = None;
@@ -326,11 +334,21 @@ impl Flow {
             .filter(|_| content.0 <= host + 3)
             .map(|(byte, length)| (byte, length, host));
         let code = code || (marked && !content.1.is_empty() && content.0 >= host + 4);
+        self.code = code;
+        // A setext underline cannot be a lazy line: the line indented short of
+        // the content of the container the open paragraph is in.
+        let stray = lazy
+            && !self.prose
+            && self
+                .nest
+                .last()
+                .map_or(!contained && !nested, |column| indent < *column);
         self.paragraph = fence.is_none()
             && !code
+            && !(marked && content.1.is_empty())
             && !(relative <= 3
-                && (heading(text) || thematic(text) || (continues && underline(text))));
-        let plain = self.paragraph && !numbered && (dash || !block(text));
+                && (heading(text) || thematic(text) || (continues && !stray && underline(text))));
+        let plain = self.paragraph && !numbered && (dash || relative > 3 || !block(text));
         self.prose = plain
             && if continues {
                 self.prose
@@ -339,7 +357,7 @@ impl Flow {
             };
         self.top = match plain && entered {
             true if continues => self.top,
-            true => (!contained && indent <= 3).then_some(lines),
+            true => (!contained && !nested && indent <= 3).then_some(lines),
             false => None,
         };
         self.bullet = match bullet {
@@ -351,6 +369,7 @@ impl Flow {
             _ if continues && plain => self.bullet,
             _ => None,
         };
+        self.empty = bullet.filter(|_| text[1..].trim().is_empty());
         self.nest.extend(opened.map(|(_, column)| column));
         fence
     }
@@ -511,20 +530,20 @@ fn read_entry<'a>(
     heading: bool,
 ) -> Entry<'a> {
     // The byte ranges in `body` of each word, and of each code span and
-    // fenced line.
+    // code-block line.
     let mut words = Vec::new();
     let mut code = Vec::new();
     let mut paragraph: Option<Range<usize>> = None;
-    for (index, (range, fenced)) in lines.iter().enumerate() {
+    for (index, (range, in_block)) in lines.iter().enumerate() {
         words.extend(split(body, range.clone()));
-        if *fenced || body[range.clone()].trim().is_empty() {
+        if *in_block || body[range.clone()].trim().is_empty() {
             code.extend(
                 paragraph
                     .take()
                     .into_iter()
                     .flat_map(|open| spans(body, open)),
             );
-            if *fenced {
+            if *in_block {
                 code.push(range.clone());
             }
         } else {
@@ -909,6 +928,133 @@ mod tests {
                 "After."
             ]
         );
+    }
+
+    #[test]
+    fn an_indented_code_block_in_a_list_entry_hides_marks_and_keeps_its_words() {
+        let body =
+            parse("1. Ruling.\n\n       **Supersedes:** 3.\n\n   After. **Supersedes:** 4.\n");
+        let entry = &body.entries[0];
+        assert_eq!(entry.supersedes, [4]);
+        assert_eq!(entry.words, ["Ruling.", "**Supersedes:**", "3.", "After."]);
+    }
+
+    #[test]
+    fn an_indented_code_block_in_a_heading_entry_hides_marks_and_keeps_its_words() {
+        let body = parse("## 1. Ruling\n\n    **Supersedes:** 3.\n\nAfter. **Supersedes:** 4.\n");
+        let entry = &body.entries[0];
+        assert_eq!(entry.supersedes, [4]);
+        assert_eq!(entry.words, ["Ruling", "**Supersedes:**", "3.", "After."]);
+    }
+
+    #[test]
+    fn an_indented_code_block_hides_a_legacy_note() {
+        let body = parse("1. Ruling.\n\n       SUPERSEDED by 3.\n");
+        assert!(body.entries[0].noted.is_empty());
+        assert_eq!(body.entries[0].words, ["Ruling.", "SUPERSEDED", "by", "3."]);
+    }
+
+    #[test]
+    fn a_deeply_indented_line_continuing_a_paragraph_is_paragraph_text() {
+        let body = parse("1. Ruling\n         **Supersedes:** 3.\n");
+        assert_eq!(body.entries[0].supersedes, [3]);
+        assert_eq!(body.entries[0].words, ["Ruling"]);
+        let body = parse("## 1. Ruling\n\nText\n        **Supersedes:** 3.\n");
+        assert_eq!(body.entries[0].supersedes, [3]);
+    }
+
+    #[test]
+    fn a_lazy_setext_underline_keeps_the_paragraph_open() {
+        for underline in ["===", "--"] {
+            let text = format!("1. a\n{underline}\n       **Supersedes:** 3.\n");
+            let body = parse(&text);
+            assert_eq!(body.entries[0].supersedes, [3], "{underline}");
+        }
+    }
+
+    #[test]
+    fn a_dash_after_an_item_paragraph_opens_a_bullet_whose_code_hides_a_mark() {
+        let body = parse("1. a\n-\n       **Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn an_underline_inside_the_item_still_closes_the_paragraph() {
+        let body = parse("1. a\n   ===\n       **Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn an_item_opening_with_a_blank_line_takes_indented_code() {
+        for text in [
+            "1.\n       **Supersedes:** 3.\n",
+            "1. a\n   -\n         **Supersedes:** 3.\n",
+        ] {
+            let body = parse(text);
+            assert!(body.entries[0].supersedes.is_empty(), "{text:?}");
+            assert!(
+                body.entries[0].words.contains(&"**Supersedes:**"),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_item_opening_with_a_blank_line_takes_a_paragraph_at_its_content_column() {
+        let body = parse("1.\n   **Supersedes:** 3.\n");
+        assert_eq!(body.entries[0].supersedes, [3]);
+    }
+
+    #[test]
+    fn code_on_an_items_first_line_hides_a_mark() {
+        let body = parse("1.     **Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn code_in_a_nested_bullet_hides_a_mark() {
+        let body = parse("1. a\n\n   - b\n\n           **Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn code_after_a_fence_closes_hides_a_mark() {
+        let body = parse("1. a\n\n   ```\n   x\n   ```\n\n       **Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn tab_indented_code_hides_a_mark() {
+        let body = parse("1. a\n\n\t\t**Supersedes:** 3.\n");
+        assert!(body.entries[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn content_after_an_empty_bullet_in_a_heading_entry_keeps_the_entry_open() {
+        for text in [
+            "## 1. a\n-\n  t\n===\n**Supersedes:** 9.\n",
+            "## 1. a\n-\n  t\n  --\n**Supersedes:** 9.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(body.entries[0].supersedes, [9], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_indented_empty_bullet_line_keeps_a_paragraph_a_direct_child() {
+        let body = parse("## 1. a\nt\n    -\n1.\n       **Supersedes:** 9.\n");
+        assert_eq!(body.entries[0].supersedes, [9]);
+    }
+
+    #[test]
+    fn a_blank_line_closes_an_empty_bullet_and_leaves_indented_code() {
+        for text in [
+            "1. a\n-\n\n    **Supersedes:** 9.\n",
+            "## 1. a\n-\n\n    **Supersedes:** 9.\n",
+        ] {
+            let body = parse(text);
+            assert!(body.entries[0].supersedes.is_empty(), "{text:?}");
+        }
     }
 
     #[test]
