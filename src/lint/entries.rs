@@ -109,23 +109,19 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
     let mut entries: Vec<Lines> = Vec::new();
     let mut outside = Vec::new();
     // The column the content of the top-level numbered list item being read
-    // starts at.
+    // starts at, and whether CommonMark still has that item open: a non-blank
+    // line indented short of its content that does not lazily continue a
+    // paragraph closes it, while the entry runs on.
     let mut item: Option<usize> = None;
+    let mut inside = false;
     // Whether a heading entry is being read.
     let mut headed = false;
     let mut met = false;
     // Whether the lines read go to the last entry.
     let open = |item: Option<usize>, headed: bool| if headings { headed } else { item.is_some() };
-    let mut paragraph = false;
-    // While a list item or an entry is being read, the index, among the lines
-    // of the last entry, of the first line of a paragraph opened at the top
-    // level: a setext heading's text, if an underline follows.
-    let mut top: Option<usize> = None;
+    let mut flow = Flow::default();
     // The fence open: its character, its length and the column it opens at.
     let mut fence: Option<(u8, usize, usize)> = None;
-    // The column the content of the bullet open outside any list item's
-    // content starts at.
-    let mut bullet: Option<usize> = None;
     let mut offset = 0;
     for raw in body.split_inclusive('\n') {
         let start = offset;
@@ -136,26 +132,30 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
         let mut inner = line;
         let (indent, rest) = indentation(line, 0);
         let blank = line.trim().is_empty();
-        let contained = item.is_some_and(|column| indent >= column);
-        let nested = bullet.is_some_and(|column| indent >= column);
+        let nested = flow.bullet.is_some_and(|column| indent >= column);
         // A fence in a list item takes no lazy lines, so a line indented short
         // of it, or of the item's content, closes it and is read as written.
-        if let (Some((_, _, column)), Some(content)) = (fence, item) {
+        if let (Some((_, _, column)), Some(content)) = (fence, item.filter(|_| inside)) {
             if !blank && indent < column.min(content) {
                 fence = None;
             }
         }
+        let lazy = flow.paragraph && !interrupts(rest, indent);
+        inside &= item.is_some_and(|column| blank || indent >= column || lazy);
+        let contained = inside && item.is_some_and(|column| indent >= column);
         let mut fenced = fence.is_some();
         if let Some((byte, length, _)) = fence {
             if closes(line, (byte, length)) {
                 fence = None;
             }
         } else if blank {
-            paragraph = false;
-            top = None;
+            flow.blank();
         } else {
             let mut numbered = false;
-            if let Some(at) = top.filter(|_| paragraph && indent <= 3 && underline(rest)) {
+            if let Some(at) = flow
+                .top
+                .filter(|_| flow.paragraph && indent <= 3 && underline(rest))
+            {
                 if let Some((_, _, _, lines)) = entries.last_mut().filter(|_| open(item, headed)) {
                     let text = lines.drain(at..).map(|(range, _)| &body[range]);
                     outside.extend(text.flat_map(str::split_whitespace));
@@ -177,10 +177,12 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
                     }
                 }
             } else if !contained && !nested {
-                // CommonMark lets only a list starting at 1 interrupt a
-                // paragraph.
-                let opened = marker(rest, indent)
-                    .filter(|(number, _, _)| item.is_some() || !paragraph || *number == 1);
+                // Only a non-empty item numbered 1 may interrupt a paragraph
+                // that is a direct child of the document; where the line falls
+                // out of an item, a bullet or a block quote, any item may open.
+                let opened = marker(rest, indent).filter(|(number, after, _)| {
+                    !flow.prose || (*number == 1 && !after.trim().is_empty())
+                });
                 if let Some((number, after, column)) = opened {
                     if !headings {
                         let written = &rest[..rest.len() - after.len()];
@@ -188,6 +190,7 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
                         text = after;
                     }
                     item = Some(column);
+                    inside = true;
                     inner = after;
                     numbered = true;
                 }
@@ -195,25 +198,13 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
             let column = item.filter(|_| numbered).unwrap_or(indent);
             fence = opens(inner).map(|(byte, length)| (byte, length, column));
             fenced = fence.is_some();
-            let continues = paragraph;
-            paragraph = !fenced
-                && !(indent <= 3
-                    && (heading(rest) || thematic(rest) || (paragraph && underline(rest))));
             let lines = entries.last().map_or(0, |(_, _, _, lines)| lines.len());
-            top = match paragraph && (item.is_some() || headed) && !numbered && !block(rest) {
-                true if continues => top,
-                true => (!contained && indent <= 3).then_some(lines),
-                false => None,
-            };
-            if !nested {
-                // A lazy line continues the bullet's paragraph, so the bullet
-                // stays open.
-                bullet = match bullet_column(rest, indent) {
-                    Some(column) if paragraph && !contained => Some(column),
-                    _ if continues && paragraph && !numbered && !block(rest) => bullet,
-                    _ => None,
-                };
-            }
+            flow.step(
+                (rest, indent),
+                (contained, nested, numbered),
+                (fenced, item.is_some() || headed),
+                lines,
+            );
         }
         match entries.last_mut().filter(|_| open(item, headed)) {
             Some((_, _, _, lines)) => {
@@ -224,6 +215,70 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
         }
     }
     (entries, outside, met)
+}
+
+/// What the lines read so far leave open for the next line.
+#[derive(Default)]
+struct Flow {
+    /// Whether a paragraph is open.
+    paragraph: bool,
+    /// Whether the open paragraph is a direct child of the document: opened
+    /// at an indent of at most three outside any item, bullet or block quote,
+    /// however it has been continued since.
+    prose: bool,
+    /// While a list item or an entry is being read, the index, among the lines
+    /// of the last entry, of the first line of a paragraph opened at the top
+    /// level: a setext heading's text, if an underline follows.
+    top: Option<usize>,
+    /// The column the content of the bullet open outside any list item's
+    /// content starts at.
+    bullet: Option<usize>,
+}
+
+impl Flow {
+    /// A blank line ends the paragraph; the bullet stays open.
+    fn blank(&mut self) {
+        self.paragraph = false;
+        self.prose = false;
+        self.top = None;
+    }
+
+    /// Reads a non-blank line, its indentation `indent` removed from `text`,
+    /// after the fence it may open is known: `fenced` is whether the line is
+    /// in a fence, `entered` whether an item or a heading entry is being read,
+    /// and `lines` how many lines the last entry holds.
+    fn step(
+        &mut self,
+        (text, indent): (&str, usize),
+        (contained, nested, numbered): (bool, bool, bool),
+        (fenced, entered): (bool, bool),
+        lines: usize,
+    ) {
+        let continues = self.paragraph;
+        self.paragraph = !fenced
+            && !(indent <= 3
+                && (heading(text) || thematic(text) || (continues && underline(text))));
+        let plain = self.paragraph && !numbered && !block(text);
+        self.prose = plain
+            && if continues {
+                self.prose
+            } else {
+                !contained && !nested && indent <= 3
+            };
+        self.top = match plain && entered {
+            true if continues => self.top,
+            true => (!contained && indent <= 3).then_some(lines),
+            false => None,
+        };
+        self.bullet = match bullet_column(text, indent) {
+            _ if nested => self.bullet,
+            Some(column) if self.paragraph && !contained => Some(column),
+            // A lazy line continues the bullet's paragraph, so the bullet stays
+            // open.
+            _ if continues && plain => self.bullet,
+            _ => None,
+        };
+    }
 }
 
 /// The column the white space opening `text` reaches from column `from`, tabs
@@ -277,6 +332,17 @@ fn bullet_column(text: &str, indent: usize) -> Option<usize> {
     } else {
         column
     })
+}
+
+/// Whether a line, its indentation `indent` removed from `text`, opens a block
+/// that interrupts a paragraph rather than continuing it lazily.
+fn interrupts(text: &str, indent: usize) -> bool {
+    indent <= 3
+        && (heading(text)
+            || thematic(text)
+            || block(text)
+            || opens(text).is_some()
+            || marker(text, indent).is_some())
 }
 
 /// Whether a line, its indentation removed, opens a bullet or a block quote.
@@ -930,6 +996,127 @@ mod tests {
             assert_eq!(body.entries[0].superseded_by, [12], "{text}");
             assert!(body.outside.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_heading_indented_up_to_three_spaces_after_a_closed_list_item_ends_the_entry() {
+        for indent in ["", "  ", "   "] {
+            let text = format!("1. First\n\nPara.\n\n{indent}## Section\n\nAfter.\n");
+            let body = parse(&text);
+            assert_eq!(body.entries[0].words, ["First", "Para."], "{text:?}");
+            assert_eq!(body.outside, ["##", "Section", "After."], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_heading_indented_in_an_open_list_item_stays_inside_it() {
+        let body = parse("1. First\n\n   ## Section\n\nAfter.\n");
+        assert_eq!(body.entries[0].words, ["First", "##", "Section", "After."]);
+        assert!(body.outside.is_empty());
+    }
+
+    #[test]
+    fn a_heading_entry_indented_after_a_closed_list_item_opens_an_entry() {
+        let body = parse(
+            "## 1. First\n\nText.\n\n1. margin\n2. margin\n\nPara.\n\n   ## 2. Second\n\nBody.\n",
+        );
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(
+            body.entries[0].words,
+            ["First", "Text.", "1.", "margin", "2.", "margin", "Para."]
+        );
+        assert_eq!(body.entries[1].words, ["Second", "Body."]);
+    }
+
+    #[test]
+    fn a_thematic_break_indented_after_a_closed_list_item_ends_the_entry() {
+        let body = parse("1. First\n\nPara.\n\n   ---\n\nAfter.\n");
+        assert_eq!(body.entries[0].words, ["First", "Para."]);
+        assert_eq!(body.outside, ["---", "After."]);
+    }
+
+    #[test]
+    fn a_numbered_item_indented_after_a_closed_list_item_opens_an_entry() {
+        let body = parse("1. First\n\nPara.\n\n   2. Second\n");
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(body.entries[0].words, ["First", "Para."]);
+        assert_eq!(body.entries[1].words, ["Second"]);
+    }
+
+    #[test]
+    fn a_numbered_line_after_a_closed_list_continues_its_paragraph() {
+        let body = parse("1. First\n\nPara.\n2. Second\n");
+        assert_eq!(numbers(&body), [1]);
+        assert_eq!(body.entries[0].words, ["First", "Para.", "2.", "Second"]);
+        assert!(body.outside.is_empty());
+    }
+
+    #[test]
+    fn a_numbered_line_after_a_block_quote_closing_the_item_opens_an_entry() {
+        for text in ["1. First\n> q\n2. Second\n", "1. First\n\n> q\n2. Second\n"] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [1, 2], "{text:?}");
+            assert_eq!(body.entries[1].words, ["Second"], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_numbered_line_after_a_block_quote_outside_entries_opens_an_entry() {
+        let body = parse("Intro\n> q\n2. x\n");
+        assert_eq!(numbers(&body), [2]);
+        assert_eq!(body.outside, ["Intro", ">", "q"]);
+    }
+
+    #[test]
+    fn an_empty_item_does_not_interrupt_a_top_level_paragraph() {
+        for text in ["Para.\n1.\n", "Para.\n1. \n"] {
+            let body = parse(text);
+            assert!(body.entries.is_empty(), "{text:?}");
+            assert_eq!(body.outside, ["Para.", "1."], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_indented_setext_heading_after_a_closed_item_ends_the_entry() {
+        for underline in ["=====", "-----"] {
+            let text = format!("1. Use TOML.\n\nPara.\n\n   Notes\n{underline}\n");
+            let body = parse(&text);
+            assert_eq!(
+                body.entries[0].words,
+                ["Use", "TOML.", "Para."],
+                "{underline}"
+            );
+            assert_eq!(body.outside, ["Notes", underline], "{underline}");
+        }
+    }
+
+    #[test]
+    fn a_sibling_item_interrupts_the_paragraph_of_an_open_item() {
+        let body = parse("1. Keep the registry. It is read by step\n2. of the bootstrap.\n");
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(body.entries[1].words, ["of", "the", "bootstrap."]);
+    }
+
+    #[test]
+    fn a_numbered_line_after_a_lazily_continued_bullet_opens_an_entry() {
+        let body = parse("- Do it\nlazily.\n2. Second\n");
+        assert_eq!(numbers(&body), [2]);
+        assert_eq!(body.outside, ["-", "Do", "it", "lazily."]);
+    }
+
+    #[test]
+    fn a_numbered_line_after_a_closed_list_and_a_blank_line_opens_an_entry() {
+        let body = parse("1. First\n\nPara.\n\n2. Second\n");
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(body.entries[0].words, ["First", "Para."]);
+    }
+
+    #[test]
+    fn a_fence_opened_after_a_closed_list_item_keeps_lines_indented_short_of_it() {
+        let body = parse("1. First\n\nPara.\n\n  ```\n**Superseded by:** 2.\n  ```\n\n2. Second\n");
+        assert_eq!(numbers(&body), [1, 2]);
+        assert!(body.entries[0].superseded_by.is_empty());
+        assert_eq!(body.entries[1].words, ["Second"]);
     }
 
     #[test]
