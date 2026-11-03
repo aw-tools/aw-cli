@@ -302,8 +302,8 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 131, "the overlay holds 131 fixtures");
-    assert_eq!(with_steps(&dirs), 86, "86 of them hold commits");
+    assert_eq!(dirs.len(), 136, "the overlay holds 136 fixtures");
+    assert_eq!(with_steps(&dirs), 91, "91 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -327,13 +327,15 @@ fn rules_without_the_opt_in(chosen: impl Fn(&FixtureFile) -> bool) -> Vec<(Strin
 }
 
 #[test]
-fn the_proposals_passing_3_6_fixtures_but_pure_appends_fail_revision_1s_3_6() {
-    let reached = rules_without_the_opt_in(|file| file.clause == "3.6" && file.outcome == "pass");
-    assert_eq!(reached.len(), 20, "{reached:?}");
+fn the_proposals_passing_body_content_fixtures_but_pure_appends_fail_revision_1s_3_6() {
+    let reached = rules_without_the_opt_in(|file| {
+        ["3.6", "3.8", "3.9", "3.10"].contains(&file.clause.as_str()) && file.outcome == "pass"
+    });
+    assert_eq!(reached.len(), 22, "{reached:?}");
     for (name, rules) in reached {
         let appends = [
             "3.6-first-entry-added",
-            "3.6-heading-entry-added-after-margin-list",
+            "3.6-heading-entry-added-after-top-level-list",
         ];
         let expected: &[Rule] = if appends.contains(&name.as_str()) {
             &[]
@@ -345,8 +347,8 @@ fn the_proposals_passing_3_6_fixtures_but_pure_appends_fail_revision_1s_3_6() {
 }
 
 #[test]
-fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
-    let reached = rules_without_the_opt_in(|file| file.clause == "3.8" || file.clause == "3.9");
+fn the_proposals_3_11_and_3_12_fixtures_have_no_findings_without_the_opt_in() {
+    let reached = rules_without_the_opt_in(|file| file.clause == "3.11" || file.clause == "3.12");
     assert_eq!(reached.len(), 13, "{reached:?}");
     for (name, rules) in reached {
         assert!(rules.is_empty(), "{name}: {rules:?}");
@@ -354,9 +356,12 @@ fn the_proposals_3_8_and_3_9_fixtures_have_no_findings_without_the_opt_in() {
 }
 
 #[test]
-fn the_proposals_passing_3_10_fixtures_fail_revision_1s_3_6() {
-    let reached = rules_without_the_opt_in(|file| file.clause == "3.10" && file.outcome == "pass");
-    assert_eq!(reached.len(), 12, "{reached:?}");
+fn the_proposals_passing_format_change_fixtures_fail_revision_1s_3_6() {
+    let reached = rules_without_the_opt_in(|file| {
+        ["3.13", "3.14", "3.15", "3.16", "3.17", "3.18"].contains(&file.clause.as_str())
+            && file.outcome == "pass"
+    });
+    assert_eq!(reached.len(), 13, "{reached:?}");
     for (name, rules) in reached {
         assert!(!rules.is_empty(), "{name}");
         assert!(
@@ -366,33 +371,38 @@ fn the_proposals_passing_3_10_fixtures_fail_revision_1s_3_6() {
     }
 }
 
+/// Every clause a rule cites has a fixture filed under it: for a failure rule
+/// any fixture whose outcome is `fail`, for a warning rule one whose verdict,
+/// run under the rule's proposal, holds a finding of that rule itself.
 #[test]
-fn every_cited_clause_has_a_failing_fixture() {
-    let failing = |dir: PathBuf| -> Vec<String> {
-        fixtures(&dir)
-            .into_iter()
-            .filter(|(_, dir)| {
-                let file: FixtureFile = toml::from_str(&text(&dir.join("fixture.toml"))).unwrap();
-                file.outcome == "fail"
-            })
-            .map(|(name, _)| name)
-            .collect()
-    };
+fn every_failure_rule_clause_has_a_failing_fixture_and_every_warning_fires_on_one() {
+    let mut dirs = fixtures(&suite());
+    for &proposal in Proposal::ALL {
+        dirs.extend(fixtures(&proposal_suite(proposal)));
+    }
+    let mut missing = Vec::new();
     for &rule in Rule::ALL {
-        let mut names = failing(suite());
-        if let Some(proposal) = rule.proposal() {
-            names.extend(failing(proposal_suite(proposal)));
-        }
+        let proposals: Vec<Proposal> = rule.proposal().into_iter().collect();
         for clause in rule.clauses() {
-            assert!(
-                names
-                    .iter()
-                    .any(|name| name.starts_with(&format!("{clause}-"))),
-                "{} cites {clause}, which has no failing fixture",
-                rule.name()
-            );
+            let reached = dirs
+                .iter()
+                .filter(|(name, _)| name.starts_with(&format!("{clause}-")))
+                .map(|(_, dir)| read(dir))
+                .any(|fixture| match rule.severity() {
+                    Severity::Failure => fixture.file.outcome == "fail",
+                    Severity::Warning => verdict(&fixture, &proposals)
+                        .is_ok_and(|findings| findings.iter().any(|finding| finding.rule == rule)),
+                });
+            if !reached {
+                missing.push(format!("{} cites {clause}", rule.name()));
+            }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "no qualifying fixture under the clause: {}",
+        missing.join("; ")
+    );
 }
 
 #[test]

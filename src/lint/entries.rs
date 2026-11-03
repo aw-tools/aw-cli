@@ -1,23 +1,21 @@
 //! Entries and supersession marks in a binding artefact's body, in the form
 //! the `supersession-marks` proposal's fixtures fix.
 //!
-//! An entry is either an item of a numbered list at the top level of the body
-//! or a level-two ATX heading at the top level, with no closing sequence of
-//! `#`, whose text opens with a number, a full stop and white space; each is
-//! identified by the number written before it. A list entry runs to the next
-//! such item, top-level heading or top-level thematic break, or the end of the
-//! body, so whatever lies between, nested lists and unindented paragraphs
-//! included, is its own. A heading entry holds its heading's words after the
-//! number and runs to the next heading entry, top-level heading of level one or
-//! two, or top-level thematic break, or the end of the body; numbered lists and
-//! deeper headings inside it are its own. Where a body holds a heading entry,
-//! none of its numbered list items is an entry. A mark is `**Supersedes:**` or
-//! `**Superseded by:**`, then entry numbers separated by commas and ending in a
-//! full stop. A legacy note is `SUPERSEDED by`, then entry numbers separated by
-//! commas and any full stop directly after the last. Both are read word by word
-//! so any white space may wrap them, and either may begin or end inside a word,
-//! what is left of that word staying a word. Code spans and fenced blocks hide
-//! marks and notes; their words stay.
+//! An entry is an item of a numbered list at the top level of the body, or a
+//! level-two heading there whose text opens with a number, a full stop and
+//! white space; such a heading is written `##`, with no closing sequence of
+//! `#`. Where a body holds a heading entry, no list item in it is an entry. An
+//! entry holds everything after its number and full stop up to whichever comes
+//! first: the next entry, a top-level heading, a top-level thematic break, or
+//! the end of the body; a heading of level three or more does not end a heading
+//! entry. Each entry is identified by the number written before it. A mark is
+//! `**Supersedes:**` or `**Superseded by:**`, then entry numbers separated by
+//! commas and ending in a full stop. A legacy note is `SUPERSEDED by`, then
+//! entry numbers separated by commas and any full stop directly after the last.
+//! Any run of white space, line breaks included, may separate the words of a
+//! mark or a legacy note, and either may begin or end inside a word, what is
+//! left of that word staying a word. Code spans and fenced blocks hide marks
+//! and notes; their words stay.
 
 use std::ops::Range;
 
@@ -41,8 +39,9 @@ pub struct Entry<'a> {
     pub supersedes: Vec<u64>,
     /// The entries its superseded-by marks name.
     pub superseded_by: Vec<u64>,
-    /// The entries its legacy notes name. Only clause 3.6 reads them: a note
-    /// is not a superseded-by mark, so clauses 3.8 and 3.9 never see it.
+    /// The entries its legacy notes name. Only clause 3.10 reads them, into
+    /// the entry's superseded-by set: a note is not a superseded-by mark, so
+    /// clauses 3.11 and 3.12 never see it.
     pub noted: Vec<u64>,
     /// The date its title carries.
     pub date: Option<String>,
@@ -1096,12 +1095,12 @@ mod tests {
     #[test]
     fn a_heading_entry_indented_after_a_closed_list_item_opens_an_entry() {
         let body = parse(
-            "## 1. First\n\nText.\n\n1. margin\n2. margin\n\nPara.\n\n   ## 2. Second\n\nBody.\n",
+            "## 1. First\n\nText.\n\n1. item\n2. item\n\nPara.\n\n   ## 2. Second\n\nBody.\n",
         );
         assert_eq!(numbers(&body), [1, 2]);
         assert_eq!(
             body.entries[0].words,
-            ["First", "Text.", "1.", "margin", "2.", "margin", "Para."]
+            ["First", "Text.", "1.", "item", "2.", "item", "Para."]
         );
         assert_eq!(body.entries[1].words, ["Second", "Body."]);
     }
@@ -1615,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn a_numbered_list_at_the_margin_of_a_heading_entry_is_the_entry_s() {
+    fn a_numbered_list_at_the_top_level_of_a_heading_entry_is_the_entry_s() {
         let body = parse(
             "## 1. Registry format\n\nUse TOML.\n\n## 2. Version control\n\nThree reasons:\n\n\
              1. Every host offers it.\n2. Every tool reads it.\n3. Signed commits come free.\n\n\

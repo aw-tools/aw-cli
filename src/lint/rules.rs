@@ -176,7 +176,7 @@ fn check_episodic(
     }
 }
 
-/// Clauses 3.8 and 3.9 of the `supersession-marks` proposal, over the entries
+/// Clauses 3.11 and 3.12 of the `supersession-marks` proposal, over the entries
 /// of every binding artefact: marks agree, each named entry on its own, and a
 /// supersedes mark names only earlier entries. A finding falls on the artefact
 /// holding the mark.
