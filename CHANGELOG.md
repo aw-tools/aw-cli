@@ -13,8 +13,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `aw lint` reads list entries as CommonMark does once an item has closed: a
   heading, thematic break or numbered item indented up to three spaces ends the
   entry, a fence opened there hides lines indented short of it, a numbered line
-  continuing a top-level paragraph opens no entry, and one directly under a
-  bullet or block quote opens one (#82)
+  continuing a top-level paragraph opens no entry, one directly under a bullet
+  or block quote opens one, and an unindented line after indented code in the
+  item closes the item (#82)
 
 ## [0.7.0] - 2026-10-30
 

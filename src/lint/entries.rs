@@ -120,7 +120,8 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
     // Whether the lines read go to the last entry.
     let open = |item: Option<usize>, headed: bool| if headings { headed } else { item.is_some() };
     let mut flow = Flow::default();
-    // The fence open: its character, its length and the column it opens at.
+    // The fence open: its character, its length and the column the content of
+    // the container it opens in starts at.
     let mut fence: Option<(u8, usize, usize)> = None;
     let mut offset = 0;
     for raw in body.split_inclusive('\n') {
@@ -128,21 +129,23 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
         offset += raw.len();
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let mut text = line;
-        // The text a fence could open: a list item's content on its first line.
-        let mut inner = line;
         let (indent, rest) = indentation(line, 0);
+        // The text a fence could open: a list item's content on its first line.
+        let mut inner = rest;
         let blank = line.trim().is_empty();
         let nested = flow.bullet.is_some_and(|column| indent >= column);
-        // A fence in a list item takes no lazy lines, so a line indented short
-        // of it, or of the item's content, closes it and is read as written.
-        if let (Some((_, _, column)), Some(content)) = (fence, item.filter(|_| inside)) {
-            if !blank && indent < column.min(content) {
-                fence = None;
-            }
+        // A fence takes no lazy lines, so a line indented short of the content
+        // of the list item it is in closes it and is read as written.
+        if fence.is_some_and(|(_, _, host)| !blank && indent < host) {
+            fence = None;
         }
-        let lazy = flow.paragraph && !interrupts(rest, indent);
-        inside &= item.is_some_and(|column| blank || indent >= column || lazy);
         let contained = inside && item.is_some_and(|column| indent >= column);
+        let outer = item
+            .filter(|_| contained)
+            .or(flow.bullet.filter(|_| nested));
+        let base = flow.base(indent, outer);
+        let lazy = flow.paragraph && !interrupts(rest, indent, base);
+        inside &= item.is_some_and(|column| blank || indent >= column || lazy);
         let mut fenced = fence.is_some();
         if let Some((byte, length, _)) = fence {
             if closes(line, (byte, length)) {
@@ -180,7 +183,7 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
                 // Only a non-empty item numbered 1 may interrupt a paragraph
                 // that is a direct child of the document; where the line falls
                 // out of an item, a bullet or a block quote, any item may open.
-                let opened = marker(rest, indent).filter(|(number, after, _)| {
+                let opened = marker(rest, indent, 0).filter(|(number, after, _)| {
                     !flow.prose || (*number == 1 && !after.trim().is_empty())
                 });
                 if let Some((number, after, column)) = opened {
@@ -195,16 +198,17 @@ fn read(body: &str, headings: bool) -> (Vec<Lines<'_>>, Vec<&str>, bool) {
                     numbered = true;
                 }
             }
-            let column = item.filter(|_| numbered).unwrap_or(indent);
-            fence = opens(inner).map(|(byte, length)| (byte, length, column));
-            fenced = fence.is_some();
+            let host = item.filter(|_| numbered).unwrap_or(base);
+            let origin = indent + rest.len() - inner.len();
             let lines = entries.last().map_or(0, |(_, _, _, lines)| lines.len());
-            flow.step(
-                (rest, indent),
+            fence = flow.step(
+                (rest, indent, base),
                 (contained, nested, numbered),
-                (fenced, item.is_some() || headed),
+                (lazy, item.is_some() || headed),
+                (inner, origin, host),
                 lines,
             );
+            fenced = fence.is_some();
         }
         match entries.last_mut().filter(|_| open(item, headed)) {
             Some((_, _, _, lines)) => {
@@ -233,6 +237,9 @@ struct Flow {
     /// The column the content of the bullet open outside any list item's
     /// content starts at.
     bullet: Option<usize>,
+    /// The columns the content of the list items open inside the top-level
+    /// item or bullet starts at, innermost last.
+    nest: Vec<usize>,
 }
 
 impl Flow {
@@ -243,22 +250,88 @@ impl Flow {
         self.top = None;
     }
 
+    /// The column the content of the innermost open container a line at
+    /// `indent` lands in starts at: `outer` is that column for the top-level
+    /// item or bullet the line is in, if any.
+    fn base(&self, indent: usize, outer: Option<usize>) -> usize {
+        outer.map_or(0, |outer| {
+            let inner = self.nest.iter().rev().find(|column| **column <= indent);
+            inner.map_or(outer, |column| *column)
+        })
+    }
+
     /// Reads a non-blank line, its indentation `indent` removed from `text`,
-    /// after the fence it may open is known: `fenced` is whether the line is
-    /// in a fence, `entered` whether an item or a heading entry is being read,
-    /// and `lines` how many lines the last entry holds.
+    /// landing in the container whose content starts at `base`: `lazy` is
+    /// whether it continues a paragraph lazily, `entered` whether an item or a
+    /// heading entry is being read, `inner` the text a fence could open, from
+    /// column `origin`, `host` the column the content of the list item that
+    /// fence would be in starts at, and `lines` how many lines the last entry
+    /// holds. Returns the fence the line opens: its character, its length and
+    /// that column.
     fn step(
         &mut self,
-        (text, indent): (&str, usize),
+        (text, indent, base): (&str, usize, usize),
         (contained, nested, numbered): (bool, bool, bool),
-        (fenced, entered): (bool, bool),
+        (lazy, entered): (bool, bool),
+        (inner, origin, host): (&str, usize, usize),
         lines: usize,
-    ) {
+    ) -> Option<(u8, usize, usize)> {
         let continues = self.paragraph;
-        self.paragraph = !fenced
-            && !(indent <= 3
+        let relative = indent - base;
+        // Indented code takes no lazy lines, so it is no paragraph.
+        let code = !continues && relative >= 4;
+        let depth = self.nest.len();
+        // A lazy line keeps every container open.
+        if !lazy {
+            if contained || nested {
+                self.nest.retain(|column| *column <= indent);
+            } else {
+                self.nest.clear();
+            }
+        }
+        // A nested item interrupting the paragraph of the container it opens
+        // in must be non-empty, and numbered 1 if ordered.
+        let interrupting = continues && self.nest.len() == depth;
+        let opened = if (contained || nested) && !code && !thematic(text) {
+            let bullet = bullet_column(text, indent, base)
+                .filter(|_| !interrupting || !text[1..].trim().is_empty())
+                .map(|column| (&text[1..], column));
+            let item = marker(text, indent, base)
+                .filter(|(number, after, _)| {
+                    !interrupting || (*number == 1 && !after.trim().is_empty())
+                })
+                .map(|(_, after, column)| (after, column));
+            bullet.or(item)
+        } else {
+            None
+        };
+        let bullet = if contained || nested {
+            None
+        } else {
+            bullet_column(text, indent, 0)
+        };
+        // An empty bullet cannot interrupt a paragraph that is a direct child
+        // of the document, so it is that paragraph's text.
+        let dash = continues && self.prose && bullet.is_some_and(|_| text[1..].trim().is_empty());
+        let bullet = bullet.filter(|_| !dash);
+        let first = opened.or(bullet.map(|column| (&text[1..], column)));
+        let marked = numbered || first.is_some();
+        let (inner, origin, host) = first.map_or((inner, origin, host), |(after, column)| {
+            (after, indent + text.len() - after.len(), column)
+        });
+        // A list item's first line may open a fence in it; content four or
+        // more columns past the item's content column is indented code, not a
+        // fence or a paragraph.
+        let content = indentation(inner, origin);
+        let fence = opens(inner)
+            .filter(|_| content.0 <= host + 3)
+            .map(|(byte, length)| (byte, length, host));
+        let code = code || (marked && !content.1.is_empty() && content.0 >= host + 4);
+        self.paragraph = fence.is_none()
+            && !code
+            && !(relative <= 3
                 && (heading(text) || thematic(text) || (continues && underline(text))));
-        let plain = self.paragraph && !numbered && !block(text);
+        let plain = self.paragraph && !numbered && (dash || !block(text));
         self.prose = plain
             && if continues {
                 self.prose
@@ -270,14 +343,17 @@ impl Flow {
             true => (!contained && indent <= 3).then_some(lines),
             false => None,
         };
-        self.bullet = match bullet_column(text, indent) {
+        self.bullet = match bullet {
             _ if nested => self.bullet,
-            Some(column) if self.paragraph && !contained => Some(column),
+            // A thematic break of bullet characters is no bullet.
+            Some(column) if !thematic(text) => Some(column),
             // A lazy line continues the bullet's paragraph, so the bullet stays
             // open.
             _ if continues && plain => self.bullet,
             _ => None,
         };
+        self.nest.extend(opened.map(|(_, column)| column));
+        fence
     }
 }
 
@@ -295,13 +371,13 @@ fn indentation(text: &str, from: usize) -> (usize, &str) {
     (column, "")
 }
 
-/// A top-level list marker's number, the text after it, and the column the
-/// item's content starts at, for a line whose indentation `indent` is removed
-/// from `text`.
-fn marker(text: &str, indent: usize) -> Option<(u64, &str, usize)> {
+/// A list marker's number, the text after it, and the column the item's
+/// content starts at, for a line at column `indent` whose indentation is
+/// removed from `text`, inside content starting at column `base`.
+fn marker(text: &str, indent: usize, base: usize) -> Option<(u64, &str, usize)> {
     let digits = text.bytes().take_while(u8::is_ascii_digit).count();
     let rest = text[digits..].strip_prefix('.')?;
-    if indent > 3
+    if indent - base > 3
         || !(1..=9).contains(&digits)
         || !(rest.is_empty() || rest.starts_with([' ', '\t']))
     {
@@ -318,11 +394,12 @@ fn marker(text: &str, indent: usize) -> Option<(u64, &str, usize)> {
     Some((text[..digits].parse().ok()?, rest, column))
 }
 
-/// The column a bullet's content starts at, for a line whose indentation
-/// `indent` is removed from `text`.
-fn bullet_column(text: &str, indent: usize) -> Option<usize> {
+/// The column a bullet's content starts at, for a line at column `indent`
+/// whose indentation is removed from `text`, inside content starting at
+/// column `base`.
+fn bullet_column(text: &str, indent: usize, base: usize) -> Option<usize> {
     let rest = text.strip_prefix(['-', '*', '+'])?;
-    if indent > 3 || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+    if indent - base > 3 || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
         return None;
     }
     let width = indent + 1;
@@ -334,15 +411,16 @@ fn bullet_column(text: &str, indent: usize) -> Option<usize> {
     })
 }
 
-/// Whether a line, its indentation `indent` removed from `text`, opens a block
-/// that interrupts a paragraph rather than continuing it lazily.
-fn interrupts(text: &str, indent: usize) -> bool {
-    indent <= 3
+/// Whether a line at column `indent`, its indentation removed from `text`,
+/// inside content starting at column `base`, opens a block that interrupts a
+/// paragraph rather than continuing it lazily.
+fn interrupts(text: &str, indent: usize, base: usize) -> bool {
+    indent - base <= 3
         && (heading(text)
             || thematic(text)
             || block(text)
             || opens(text).is_some()
-            || marker(text, indent).is_some())
+            || marker(text, indent, base).is_some())
 }
 
 /// Whether a line, its indentation removed, opens a bullet or a block quote.
@@ -1117,6 +1195,207 @@ mod tests {
         assert_eq!(numbers(&body), [1, 2]);
         assert!(body.entries[0].superseded_by.is_empty());
         assert_eq!(body.entries[1].words, ["Second"]);
+    }
+
+    #[test]
+    fn indented_code_in_an_item_takes_no_lazy_line() {
+        let body = parse("1. a\n\n       code\nlazy\n   ## H\n");
+        assert_eq!(body.entries[0].words, ["a", "code", "lazy"]);
+        assert_eq!(body.outside, ["##", "H"]);
+    }
+
+    #[test]
+    fn a_paragraph_in_a_nested_bullet_takes_a_lazy_line() {
+        let body = parse("1. a\n\n   - b\n\n       deep\nlazy\n   ## H\n");
+        assert_eq!(
+            body.entries[0].words,
+            ["a", "-", "b", "deep", "lazy", "##", "H"]
+        );
+        assert!(body.outside.is_empty());
+    }
+
+    #[test]
+    fn a_numbered_line_after_indented_code_in_an_item_and_an_unindented_line_opens_no_entry() {
+        let body = parse("1. a\n\n       code\nlazy\n2. b\n");
+        assert_eq!(numbers(&body), [1]);
+        assert_eq!(body.entries[0].words, ["a", "code", "lazy", "2.", "b"]);
+    }
+
+    #[test]
+    fn indented_code_in_a_bullet_two_levels_deep_takes_no_lazy_line() {
+        let body = parse("1. a\n\n   - b\n\n     - c\n\n           code\nlazy\n   ## H\n");
+        assert_eq!(
+            body.entries[0].words,
+            ["a", "-", "b", "-", "c", "code", "lazy"]
+        );
+        assert_eq!(body.outside, ["##", "H"]);
+    }
+
+    #[test]
+    fn a_numbered_line_after_indented_code_in_a_bullet_and_an_unindented_line_opens_no_entry() {
+        let body = parse("- b\n\n      code\nlazy\n2. x\n");
+        assert!(body.entries.is_empty());
+        assert_eq!(body.outside, ["-", "b", "code", "lazy", "2.", "x"]);
+    }
+
+    #[test]
+    fn a_fence_opener_indented_as_code_in_an_item_opens_no_fence() {
+        let body = parse("1. a\n\n       ```\n   **Superseded by:** 2.\n");
+        assert_eq!(body.entries[0].superseded_by, [2]);
+        assert_eq!(body.entries[0].words, ["a", "```"]);
+    }
+
+    #[test]
+    fn a_line_indented_short_of_a_nested_bullet_closes_the_fence_in_it() {
+        let body = parse("1. a\n\n   - b\n\n     ```\n   **Superseded by:** 2.\n");
+        assert_eq!(body.entries[0].superseded_by, [2]);
+        assert_eq!(body.entries[0].words, ["a", "-", "b", "```"]);
+    }
+
+    #[test]
+    fn a_paragraph_in_a_bullet_two_levels_deep_takes_a_lazy_line() {
+        let body = parse("1. a\n\n   - b\n\n     - c\n\n          deep\nlazy\n   ## H\n");
+        assert_eq!(
+            body.entries[0].words,
+            ["a", "-", "b", "-", "c", "deep", "lazy", "##", "H"]
+        );
+        assert!(body.outside.is_empty());
+    }
+
+    #[test]
+    fn a_lazy_line_keeps_a_nested_bullet_open_for_the_lines_after_it() {
+        let body = parse("1. a\n\n   - b\nlazy\n\n       deep\nmore\n2. c\n");
+        assert_eq!(numbers(&body), [1, 2]);
+        assert_eq!(body.entries[1].words, ["c"]);
+    }
+
+    #[test]
+    fn a_lazy_line_keeps_a_bullet_nested_in_a_bullet_open_for_the_lines_after_it() {
+        let body = parse("- b\n  - c\nlazy\n\n      deep\nmore\n2. x\n");
+        assert_eq!(numbers(&body), [2]);
+        assert_eq!(body.outside, ["-", "b", "-", "c", "lazy", "deep", "more"]);
+    }
+
+    #[test]
+    fn a_fence_in_a_nested_bullet_kept_open_by_a_lazy_line_closes_with_the_bullet() {
+        let body = parse("1. a\n\n   - b\nlazy\n\n     ```\n   **Superseded by:** 2.\n");
+        assert_eq!(body.entries[0].superseded_by, [2]);
+    }
+
+    #[test]
+    fn a_fence_opener_indented_past_three_in_an_item_paragraph_opens_no_fence() {
+        let body = parse("1. a\n       ```\n   **Superseded by:** 2.\n");
+        assert_eq!(body.entries[0].superseded_by, [2]);
+        assert_eq!(body.entries[0].words, ["a", "```"]);
+    }
+
+    #[test]
+    fn a_heading_at_the_content_column_of_a_wide_item_is_no_paragraph() {
+        let body = parse("10. a\n\n    ## H\nlazy\n2. b\n");
+        assert_eq!(numbers(&body), [10]);
+        assert_eq!(body.entries[0].words, ["a", "##", "H", "lazy", "2.", "b"]);
+    }
+
+    #[test]
+    fn a_heading_in_a_nested_bullet_is_no_paragraph() {
+        let body = parse("1. a\n\n   - b\n\n     ## H\nlazy\n2. c\n");
+        assert_eq!(numbers(&body), [1]);
+    }
+
+    #[test]
+    fn a_setext_underline_in_a_nested_bullet_ends_its_paragraph() {
+        let body = parse("1. a\n\n   - b\n     ---\nlazy\n2. c\n");
+        assert_eq!(numbers(&body), [1]);
+    }
+
+    #[test]
+    fn a_tab_after_a_nested_marker_expands_from_the_marker_s_column() {
+        let body = parse("1. a\n\n   -\tb\n\n       x\nlazy\n2. c\n");
+        assert_eq!(numbers(&body), [1]);
+    }
+
+    #[test]
+    fn a_fence_on_a_nested_item_s_first_line_opens() {
+        for text in [
+            "1. a\n   - ```\n     **Superseded by:** 2.\n     ```\n",
+            "1. a\n   1. ```\n      **Superseded by:** 2.\n      ```\n",
+        ] {
+            let body = parse(text);
+            assert!(body.entries[0].superseded_by.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_fence_on_a_top_level_bullet_s_first_line_opens() {
+        let body = parse("1. a\n\n- ```\n  **Superseded by:** 2.\n  ```\n");
+        assert!(body.entries[0].superseded_by.is_empty());
+        assert_eq!(
+            body.entries[0].words,
+            ["a", "-", "```", "**Superseded", "by:**", "2.", "```"]
+        );
+    }
+
+    #[test]
+    fn a_fence_on_a_top_level_bullet_s_first_line_opens_in_a_heading_entry() {
+        let body = parse("## 1. Title\n\n- ```\n  **Superseded by:** 2.\n  ```\n");
+        assert!(body.entries[0].superseded_by.is_empty());
+        assert_eq!(
+            body.entries[0].words,
+            ["Title", "-", "```", "**Superseded", "by:**", "2.", "```"]
+        );
+    }
+
+    #[test]
+    fn a_thematic_break_of_bullet_characters_in_an_item_opens_no_nested_bullet() {
+        for text in [
+            "1. a\n\n   - - -\n\n       x\nlazy\n2. c\n",
+            "1. a\n\n   * * *\n\n       x\nlazy\n2. c\n",
+            "1. a\n   - - -\n\n       x\nlazy\n2. c\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), [1], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_fence_opener_five_or_more_columns_after_a_marker_is_indented_code() {
+        for text in [
+            "1. a\n\n-     ```\n  **Superseded by:** 2.\n",
+            "1. a\n\n   -     ```\n     **Superseded by:** 2.\n",
+            "1.     ```\n   **Superseded by:** 2.\n",
+        ] {
+            let body = parse(text);
+            assert_eq!(body.entries[0].superseded_by, [2], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn content_five_or_more_columns_after_a_marker_is_indented_code_and_takes_no_lazy_line() {
+        for (text, entries) in [
+            ("1. a\n\n   -     ```\nlazy\n2. c\n", vec![1]),
+            ("1. a\n\n   -     x\nlazy\n2. c\n", vec![1]),
+            ("Para.\n\n-     x\nlazy\n2. c\n", vec![]),
+            ("1.     x\nlazy\n2. c\n", vec![1]),
+        ] {
+            let body = parse(text);
+            assert_eq!(numbers(&body), entries, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_bullet_after_a_top_level_paragraph_is_its_text() {
+        for text in ["Para.\n*\n2. x\n", "Para.\n+\n2. x\n"] {
+            let body = parse(text);
+            assert!(body.entries.is_empty(), "{text:?}");
+            assert_eq!(body.outside.len(), 4, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_single_dash_after_a_top_level_paragraph_underlines_it() {
+        let body = parse("Para.\n-\n2. x\n");
+        assert_eq!(numbers(&body), [2]);
+        assert_eq!(body.outside, ["Para.", "-"]);
     }
 
     #[test]
