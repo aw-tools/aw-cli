@@ -1,6 +1,6 @@
 //! Every rule `aw lint` checks: its printed name, its severity, and the
-//! contract clauses it enforces. A rule citing no clause is outside the
-//! contract.
+//! contract clauses it decides or lets a passing fixture pass under. A rule
+//! citing no clause is outside the contract.
 
 #[cfg(test)]
 use super::proposal::Proposal;
@@ -128,9 +128,10 @@ rules! {
 }
 
 impl Rule {
-    /// The contract clauses the rule enforces, so a failing fixture is known
-    /// to fail for its own clause and not by accident. Only the suite reads
-    /// them so far.
+    /// The contract clauses the rule decides or lets a passing fixture pass
+    /// under, so a failing fixture is known to fail for its own clause and not
+    /// by accident, and a warning's fixture to reach the warning. Only the
+    /// suite reads them so far.
     #[cfg(test)]
     pub fn clauses(self) -> &'static [&'static str] {
         match self {
@@ -147,14 +148,13 @@ impl Rule {
             Rule::UnitUndeclared => &["4.2.1"],
             Rule::OpenInClosedUnit => &["4.2.3"],
             Rule::CompactedEmpty => &["4.2.4"],
-            Rule::EntryMarkUnmatched => &["3.8"],
-            Rule::EntrySupersedesLater => &["3.9"],
+            Rule::EntryMarkUnmatched => &["3.11"],
+            Rule::EntrySupersedesLater => &["3.12"],
             Rule::StatusSkipped | Rule::StatusBackwards => &["3.3"],
-            Rule::BindingRewritten => &["3.6"],
-            Rule::EntryRemoved
-            | Rule::EntryAdded
-            | Rule::FormatChangeNarrow
-            | Rule::FormatChangeNoEntries => &["3.10"],
+            Rule::BindingRewritten => &["3.6", "3.9", "3.10", "3.13"],
+            Rule::EntryRemoved => &["3.15"],
+            Rule::EntryAdded => &["3.16"],
+            Rule::FormatChangeNarrow | Rule::FormatChangeNoEntries => &["3.18"],
             Rule::ResidueMissing => &["4.1.2"],
             Rule::EphemeralArchived => &["4.1.4"],
             Rule::CloseWithUnit => &["4.2.2"],

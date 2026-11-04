@@ -1,3 +1,0 @@
-clause = "3.8"
-outcome = "fail"
-artefacts = ["verdicts/*.md"]

@@ -33,8 +33,8 @@ pub struct FormatChange {
     pub groups: Vec<Group>,
 }
 
-/// Every change of words in the commit that removes the same words and
-/// inserts the same words.
+/// Every change of words in the commit that replaces the same old words with
+/// the same new words.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Group {
     pub removed: Vec<String>,
@@ -111,7 +111,7 @@ pub fn checked(change: &Change, proposals: &[Proposal]) -> Checked {
     }
 }
 
-/// Clause 3.10: each binding artefact whose `reformatted` field the commit
+/// Clause 3.13: each binding artefact whose `reformatted` field the commit
 /// adds or changes the text of, with what it continues at `HEAD`.
 fn reformatted<'a>(staged: &'a Model, head: &'a Head) -> Vec<(&'a Artefact, &'a Artefact)> {
     staged
@@ -127,7 +127,8 @@ fn reformatted<'a>(staged: &'a Model, head: &'a Head) -> Vec<(&'a Artefact, &'a 
         .collect()
 }
 
-/// Clauses 3.3 and 3.6: each artefact against what it was at `HEAD`.
+/// Clauses 3.3 and 3.6: each artefact against what it was at `HEAD`; clauses
+/// 3.9, 3.10 and 3.14 through `rewritten`.
 fn check_transitions(
     staged: &Model,
     head: &Head,
@@ -187,15 +188,18 @@ fn check_transitions(
     }
 }
 
-/// Clause 3.6 as the `supersession-marks` proposal words it, marks, legacy
-/// notes and layout aside: how a binding artefact's body changes what `before`
-/// recorded, if it does. Each recorded entry must be read again under its
-/// number, keeping its words and every entry its two sets name, new entries
-/// must be numbered above the highest of them, and, where `before` holds no
-/// entry, the words outside entries must begin with the recorded ones. In an
-/// artefact whose format change the commit declares, no words are compared,
-/// and a recorded entry not read again and every entry added are left to
-/// clause 3.10.
+/// Clause 3.6 as the `supersession-marks` proposal words it, over the body
+/// content clauses 3.8 and 3.9 leave: how a binding artefact's body changes
+/// what `before` recorded, if it does. Each recorded entry must be read again
+/// under its number, keeping its words and, as clause 3.10 requires, a
+/// supersedes mark naming each entry its supersedes marks named, and a
+/// superseded-by mark or legacy note naming each entry its superseded-by marks
+/// or legacy notes named; new entries must be numbered above the highest of
+/// them; and, where `before` holds no entry, the words outside entries must
+/// begin with the recorded ones. In an artefact whose format change the commit
+/// declares, no words are compared, as clause 3.14 requires, and a recorded
+/// entry not read again and every entry added are left to clauses 3.15 and
+/// 3.16.
 fn rewritten(before: &str, after: &str, format_change: bool) -> Option<String> {
     let (was, now) = (entries::parse(before), entries::parse(after));
     let (pairs, added) = paired(&was.entries, &now.entries);
@@ -294,10 +298,11 @@ fn paired<'e, 'a>(
     (pairs, left.into_iter().map(|index| &now[index]).collect())
 }
 
-/// Clause 3.10 on the artefacts the commit declares a format change of, each
-/// with what it continues at `HEAD`: every recorded entry stays under its
-/// number, none is added anywhere where a declared artefact recorded one, and
-/// the changes of words are grouped for the report.
+/// Clauses 3.15 to 3.18 on the artefacts the commit declares a format change
+/// of, each with what it continues at `HEAD`: every recorded entry stays under
+/// its number, none is added anywhere where a declared artefact recorded one,
+/// the changes of words are grouped for the report, and an artefact recording
+/// no entry draws a warning.
 fn check_format_change(
     staged: &Model,
     head: &Head,
@@ -367,7 +372,7 @@ fn check_format_change(
 /// in there, if any, and the words it removes and inserts.
 type WordChange<'a> = (&'a str, Option<u64>, Vec<&'a str>, Vec<&'a str>);
 
-/// Clause 3.10 where a declared artefact recorded an entry: each entry of a
+/// Clause 3.16 where a declared artefact recorded an entry: each entry of a
 /// staged binding artefact beyond as many under its number as the binding
 /// artefacts at `HEAD` hold is added. Entries under a number their own
 /// artefact held at `HEAD` are counted first, so the one left over is the one
@@ -428,7 +433,7 @@ fn check_added(staged: &Model, head: &Head, found: &mut impl FnMut(&str, Rule, S
     }
 }
 
-/// Clause 3.10's warning of a group touching only one or two entries, on each
+/// Clause 3.18's warning of a group touching only one or two entries, on each
 /// artefact holding one of them.
 fn warn_narrow(groups: &[Group], found: &mut impl FnMut(&str, Rule, String)) {
     for group in groups {
@@ -1548,7 +1553,7 @@ class = \"binding\"
         );
         let checked = commit(
             &[LABELLED],
-            &["reformatted: x\n---\n## 1. A\n\n## 2. B\n\n## 3. C\n"],
+            &["reformatted: x\n---\n### 1. A\n\n### 2. B\n\n### 3. C\n"],
             MARKS,
         );
         assert_eq!(rules_of(&checked), [("notes/0.md", Rule::EntryRemoved); 3]);
@@ -1571,7 +1576,7 @@ class = \"binding\"
     #[test]
     fn a_format_change_where_no_entry_is_recorded_compares_the_whole_body_and_warns() {
         let checked = commit(
-            &["---\n## 1. A\n\nUse TOML.\n"],
+            &["---\n### 1. A\n\nUse TOML.\n"],
             &["reformatted: x\n---\n1. **A.** Use TOML.\n"],
             MARKS,
         );
@@ -1588,7 +1593,7 @@ class = \"binding\"
             groups,
             [
                 Group {
-                    removed: words(&["##"]),
+                    removed: words(&["###"]),
                     inserted: Vec::new(),
                     changes: 1,
                     places: vec![("notes/0.md".to_owned(), Vec::new())],
@@ -1688,7 +1693,7 @@ class = \"binding\"
     #[test]
     fn a_format_change_where_no_entry_is_recorded_reports_no_mark() {
         let checked = commit(
-            &["---\n## 1. A\n\nUse TOML.\n\n## 2. B\n\nUse JSON.\n"],
+            &["---\n### 1. A\n\nUse TOML.\n\n### 2. B\n\nUse JSON.\n"],
             &[
                 "reformatted: x\n---\n1. **A.** Use TOML. **Superseded by:** 2.\n\
                2. **B.** Use JSON. **Supersedes:** 1.\n",
@@ -1704,7 +1709,7 @@ class = \"binding\"
             checked.format_change.unwrap().groups,
             [
                 Group {
-                    removed: words(&["##"]),
+                    removed: words(&["###"]),
                     inserted: Vec::new(),
                     changes: 2,
                     places: place(),

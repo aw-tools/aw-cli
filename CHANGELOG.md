@@ -6,6 +6,19 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `aw lint` reads a binding artefact's `## 1.` headings as its entries, so a
+  heading-form register converts to a list without losing them (#82)
+- `aw lint` reads list entries as CommonMark does once an item has closed: a
+  heading, thematic break or numbered item indented up to three spaces ends the
+  entry, a fence opened there hides lines indented short of it, a numbered line
+  continuing a top-level paragraph opens no entry, one directly under a bullet
+  or block quote opens one, and an unindented line after indented code in the
+  item closes the item (#82)
+- `aw lint` no longer reads a supersession mark or legacy note inside an
+  indented code block (#82)
+
 ## [0.7.0] - 2026-10-30
 
 ### Added
