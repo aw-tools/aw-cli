@@ -292,7 +292,7 @@ fn with_steps(dirs: &BTreeMap<String, PathBuf>) -> usize {
 #[test]
 fn every_fixture_reaches_its_verdict() {
     let dirs = fixtures(&suite());
-    assert_eq!(dirs.len(), 52, "revision 1 holds 52 fixtures");
+    assert_eq!(dirs.len(), 54, "revision 1 holds 54 fixtures");
     assert_eq!(with_steps(&dirs), 20, "20 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -302,7 +302,7 @@ fn every_fixture_reaches_its_verdict() {
 fn every_fixture_reaches_its_verdict_with_supersession_marks_opted_into() {
     let mut dirs = fixtures(&suite());
     dirs.extend(fixtures(&proposal_suite(Proposal::SupersessionMarks)));
-    assert_eq!(dirs.len(), 136, "the overlay holds 136 fixtures");
+    assert_eq!(dirs.len(), 138, "the overlay holds 138 fixtures");
     assert_eq!(with_steps(&dirs), 91, "91 of them hold commits");
     let wrong = wrong_verdicts(&dirs, &[Proposal::SupersessionMarks]);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
