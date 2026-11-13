@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-13
+
 ### Fixed
 
 - `aw lint` reads a binding artefact's `## 1.` headings as its entries, so a
